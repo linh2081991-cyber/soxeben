@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.5 · 16/11/2026';
+const APP_BUILD = 'Bản sạch 1.6 · 16/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -9027,7 +9027,40 @@ function siteWageTiers(s){
   const rate2 = (tier2Raw===null || tier2Raw===undefined || tier2Raw==='') ? rate1 : (Number(tier2Raw)||0);
   return { rate1, rate2, tierN: siteWageTier1Count(s) };
 }
+// Bản sạch 1.6 (Ông Chủ yêu cầu 16/11/2026): lương chuyến GÕ TAY từng chuyến.
+// Chỉ áp cho công trình tạo mới từ bản này (có cờ wageManual) — công trình
+// cũ không có cờ → giữ NGUYÊN công thức mức 1/mức 2, lương đã chốt không lệch.
+//  - Thương Mại: mỗi chuyến có ô t.tripWage; chỉ cộng chuyến đã đủ 4 số
+//    (giống hệt cách đếm chuyến siteTripCount).
+//  - Chở Cước: mảng s.freightTripWages, 1 ô / chuyến theo ô "Số chuyến".
+function siteIsManualWage(s){ return !!(s && s.wageManual); }
+function freightManualSlotCount(s){ const n = Math.ceil(Number(s && s.trips)||0); return n>0 ? Math.min(n, 200) : 0; }
+function siteTripWageAt(s, tIdx, t){
+  if(siteIsManualWage(s)){
+    if(s.siteType==='commercial') return Number(t && t.tripWage)||0;
+    return Number((s.freightTripWages||[])[tIdx])||0;
+  }
+  const { rate1, rate2 } = siteWageTiers(s);
+  return tIdx<siteWageTier1Count(s) ? rate1 : rate2;
+}
+function siteManualWageTotal(s){
+  if(s.siteType==='commercial'){
+    return (s.commercialTrips||[]).filter(t=>
+      (Number(t.buyVolume)>0) && (Number(t.buyUnitPrice)>0) &&
+      (Number(t.sellVolume)>0) && (Number(t.sellUnitPrice)>0)
+    ).reduce((a,t)=>a+(Number(t.tripWage)||0),0);
+  }
+  const n = freightManualSlotCount(s); let sum = 0;
+  for(let k=0;k<n;k++) sum += Number((s.freightTripWages||[])[k])||0;
+  return sum;
+}
+// Mức lương/chuyến hiển thị tham khảo (file xuất, phiếu lương): công trình gõ tay = bình quân.
+function siteWageDisplayRate(s){
+  if(!siteIsManualWage(s)) return Number(s.driverWagePerTrip)||0;
+  const n = siteTripCount(s); return n>0 ? Math.round(siteManualWageTotal(s)/n) : 0;
+}
 function siteWageTotal(s){
+  if(siteIsManualWage(s)) return siteManualWageTotal(s);
   const trips = siteEffectiveWageTrips(s);
   const { rate1, rate2, tierN } = siteWageTiers(s);
   const tier1Trips = Math.min(trips, tierN);
@@ -9074,7 +9107,7 @@ function driverTripWageStatsInRange(driverId, from, to, shiftsList){
       const { rate1, rate2 } = siteWageTiers(s);
       completeTrips.forEach((t, tIdx)=>{
         const effDriver = t.pickupDriverId || sh.driverId;
-        if(effDriver===driverId){ tripCount += 1; tripWage += (tIdx<siteWageTier1Count(s) ? rate1 : rate2); }
+        if(effDriver===driverId){ tripCount += 1; tripWage += siteTripWageAt(s, tIdx, t); }
       });
     });
   });
@@ -10584,6 +10617,12 @@ function renderSiteRows(){
     wrap.innerHTML = `<div class="hint" style="margin-bottom:10px;">Chưa có công trình nào. Bấm "+ Thêm Công Trình" bên dưới.</div>`;
     return;
   }
+  sh.siteLogs.forEach(s=>{
+    if(!siteIsManualWage(s) || s.siteType==='commercial') return;
+    if(!Array.isArray(s.freightTripWages)) s.freightTripWages = [];
+    const n = freightManualSlotCount(s);
+    for(let k=1;k<n;k++){ if(s.freightTripWages[k]===undefined || s.freightTripWages[k]===null) s.freightTripWages[k] = Number(s.freightTripWages[k-1])||0; }
+  });
   wrap.innerHTML = sh.siteLogs.map((s,i)=>{
     const isCommercial = s.siteType==='commercial';
     const typeToggle = `
@@ -10645,6 +10684,10 @@ function renderSiteRows(){
               </div>
               <div class="hint" style="margin-top:4px; color:var(--accent); font-weight:700;">📌 Chuyến này do ${escapeHtml(driverById(t.pickupDriverId)?driverById(t.pickupDriverId).name:'')} lấy hàng${t.pickupDate?` ngày ${escapeHtml(formatDateVN(t.pickupDate))}`:' (chưa chọn ngày múc — sẽ đoán ca gần nhất, dễ sai)'} — ${escapeHtml(driverById(sh.driverId)?driverById(sh.driverId).name:'tài xế ca')} đổ hộ</div>` : ''}
             </div>
+            ${siteIsManualWage(s) ? `<div class="field" style="margin-top:8px; margin-bottom:0;">
+              <label>💰 Lương chuyến này (đ)</label>
+              <input type="text" inputmode="decimal" class="ctrip-money" data-idx="${i}" data-tidx="${ti}" data-field="tripWage" placeholder="0" value="${t.tripWage?toIntSafe(t.tripWage).toLocaleString('vi-VN'):''}">
+            </div>` : ''}
           </div>`).join('');
       body = `
         <div class="field">
@@ -10691,6 +10734,7 @@ function renderSiteRows(){
             <span>Đã xuất hoá đơn bán</span>
           </label>
         </div>
+${siteIsManualWage(s) ? `<div class="hint" style="margin:0;">💰 Lương chuyến gõ tay trong từng chuyến ở trên. Chuyến chỉ được tính lương khi đã nhập đủ khối lượng + đơn giá mua và bán.</div>` : `
         <div class="field" style="margin-bottom:0;">
           <label>Lương / chuyến (đ) — mức 1, áp dụng ${siteWageTier1Count(s)} chuyến đầu</label>
           <input type="text" inputmode="decimal" class="site-money" data-idx="${i}" data-field="driverWagePerTrip" placeholder="0" value="${s.driverWagePerTrip?toIntSafe(s.driverWagePerTrip).toLocaleString('vi-VN'):''}">
@@ -10702,7 +10746,7 @@ function renderSiteRows(){
         <div class="field" style="margin-bottom:0; margin-top:10px;">
           <label>Lương / chuyến mức 2 — từ chuyến thứ ${siteWageTier1Count(s)+1} trở đi (đ) — để trống = dùng chung giá ở trên</label>
           <input type="text" inputmode="decimal" class="site-money" data-idx="${i}" data-field="driverWagePerTripTier2" placeholder="Để trống = giống giá mức 1" value="${s.driverWagePerTripTier2?toIntSafe(s.driverWagePerTripTier2).toLocaleString('vi-VN'):''}">
-        </div>`;
+        </div>`}`;
     } else {
       body = `
         <div class="field">
@@ -10726,6 +10770,17 @@ function renderSiteRows(){
             <input type="text" inputmode="decimal" class="site-money" data-idx="${i}" data-field="materialUnitPrice" placeholder="0" value="${s.materialUnitPrice?toIntSafe(s.materialUnitPrice).toLocaleString('vi-VN'):''}">
           </div>
         </div>
+${siteIsManualWage(s) ? `<div class="field">
+          <label>Số chuyến</label>
+          <input type="text" data-numfmt="1" data-decimals="2" inputmode="decimal" class="site-input" data-idx="${i}" data-field="trips" placeholder="0" value="${blankIfZero(s.trips)}">
+        </div>
+        ${freightManualSlotCount(s)>0 ? `
+        <div class="field" style="margin-bottom:0;">
+          <label>💰 Lương từng chuyến (đ) — chuyến mới tự điền giống chuyến trước, sửa nếu khác</label>
+          <div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px;">
+            ${Array.from({length:freightManualSlotCount(s)}, (_,k)=>`<div><div class="hint" style="margin:0 0 2px;">Chuyến ${k+1}</div><input type="text" inputmode="decimal" class="fwage-money" data-idx="${i}" data-k="${k}" placeholder="0" value="${(s.freightTripWages||[])[k]?toIntSafe(s.freightTripWages[k]).toLocaleString('vi-VN'):''}"></div>`).join('')}
+          </div>
+        </div>` : `<div class="hint" style="margin:0;">Nhập số chuyến để hiện ô lương từng chuyến.</div>`}` : `
         <div class="two-col">
           <div class="field">
             <label>Số chuyến</label>
@@ -10743,7 +10798,7 @@ function renderSiteRows(){
         <div class="field" style="margin-bottom:0;">
           <label>Lương / chuyến mức 2 — từ chuyến thứ ${siteWageTier1Count(s)+1} trở đi (đ) — để trống = dùng chung giá ở trên</label>
           <input type="text" inputmode="decimal" class="site-money" data-idx="${i}" data-field="driverWagePerTripTier2" placeholder="Để trống = giống giá mức 1" value="${s.driverWagePerTripTier2?toIntSafe(s.driverWagePerTripTier2).toLocaleString('vi-VN'):''}">
-        </div>`;
+        </div>`}`;
     }
     return `
     <div class="site-row" data-idx="${i}">
@@ -10806,6 +10861,23 @@ function bindSiteRowEvents(){
   });
   // #396 — đổi số chuyến mức 1 xong (rời ô) thì vẽ lại để nhãn "mức 1 … chuyến đầu / từ chuyến thứ …" đúng số mới.
   wrap.querySelectorAll('[data-field="wageTier1Trips"]').forEach(inp=>inp.addEventListener('change', ()=>{ renderSiteRows(); updateSummary(); }));
+  // Bản sạch 1.6 — Chở Cước gõ tay: đổi số chuyến (rời ô) thì vẽ lại đúng số ô lương.
+  wrap.querySelectorAll('[data-field="trips"]').forEach(inp=>inp.addEventListener('change', ()=>{
+    const s = sh.siteLogs[Number(inp.dataset.idx)];
+    if(s && siteIsManualWage(s)){ saveMainScroll(); renderSiteRows(); restoreMainScroll(); updateSummary(); }
+  }));
+  wrap.querySelectorAll('.fwage-money').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const idx = Number(inp.dataset.idx), k = Number(inp.dataset.k);
+      const s = sh.siteLogs[idx];
+      const digits = inp.value.replace(/[^\d]/g,'');
+      const num = digits==='' ? 0 : parseInt(digits,10);
+      inp.value = digits==='' ? '' : num.toLocaleString('vi-VN');
+      if(!Array.isArray(s.freightTripWages)) s.freightTripWages = [];
+      s.freightTripWages[k] = num;
+      updateSiteCalc(idx); updateSummary();
+    });
+  });
   wrap.querySelectorAll('.site-money').forEach(inp=>{
     inp.addEventListener('input', ()=>{
       const idx = Number(inp.dataset.idx), field=inp.dataset.field;
@@ -10883,7 +10955,9 @@ function bindSiteRowEvents(){
     btn.addEventListener('click', ()=>{
       const idx = Number(btn.dataset.idx);
       if(!Array.isArray(sh.siteLogs[idx].commercialTrips)) sh.siteLogs[idx].commercialTrips = [];
-      sh.siteLogs[idx].commercialTrips.push({ tripLocation:'', goodsType:'', buyVolume:0, buyUnitPrice:0, sellVolume:0, sellUnitPrice:0 });
+      const prevTrips = sh.siteLogs[idx].commercialTrips;
+      const prevWage = prevTrips.length ? (Number(prevTrips[prevTrips.length-1].tripWage)||0) : 0;
+      sh.siteLogs[idx].commercialTrips.push({ tripLocation:'', goodsType:'', buyVolume:0, buyUnitPrice:0, sellVolume:0, sellUnitPrice:0, tripWage: prevWage });
       syncSiteNameFromTrips(sh.siteLogs[idx]);
       renderSiteRows(); updateSummary();
     });
@@ -11511,7 +11585,7 @@ function bindFormEvents(){
   document.getElementById('f_notes').addEventListener('input', e=>{ sh.notes=e.target.value; });
 
   document.getElementById('addSiteBtn').addEventListener('click', ()=>{
-    sh.siteLogs.push({ siteType:'freight', siteName:'', volumePerTrip:0, materialUnitPrice:0, priceIncludesVat:false, trips:0, driverWagePerTrip:0, driverWagePerTripTier2:null, wageTier1Trips:null, wageQualifyingTripsOverride:null,
+    sh.siteLogs.push({ wageManual:true, freightTripWages:[], siteType:'freight', siteName:'', volumePerTrip:0, materialUnitPrice:0, priceIncludesVat:false, trips:0, driverWagePerTrip:0, driverWagePerTripTier2:null, wageTier1Trips:null, wageQualifyingTripsOverride:null,
       commercialTrips:[], buyIncludesVat:false, sellIncludesVat:false, buyHasInvoice:false, sellHasInvoice:false });
     renderSiteRows(); updateSummary();
   });
@@ -24832,9 +24906,9 @@ function buildOperationLogRows(){
         // mình, cột kia để trống, không lẫn 2 khái niệm vào cùng 1 cột nữa.
         const siteFields = isC
           ? ['', s.siteName||'', 'Thương Mại', '', '', Math.round(commercialNetBuy(s)), Math.round(commercialNetSell(s)), siteTripCount(s), Math.round(siteRevenue(s)),
-             s.driverWagePerTrip||0, siteWageTier1Count(s), siteWageTiers(s).rate2, siteEffectiveWageTrips(s), siteWageTotal(s)]
+             siteWageDisplayRate(s), siteIsManualWage(s)?'':siteWageTier1Count(s), siteIsManualWage(s)?'':siteWageTiers(s).rate2, siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s), siteWageTotal(s)]
           : [s.siteName||'', '', 'Chở Cước', s.volumePerTrip||0, s.materialUnitPrice||0, '', '', siteTripCount(s), Math.round(siteRevenue(s)),
-             s.driverWagePerTrip||0, siteWageTier1Count(s), siteWageTiers(s).rate2, siteEffectiveWageTrips(s), siteWageTotal(s)];
+             siteWageDisplayRate(s), siteIsManualWage(s)?'':siteWageTier1Count(s), siteIsManualWage(s)?'':siteWageTiers(s).rate2, siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s), siteWageTotal(s)];
         rows.push([...shared, ...siteFields, ...trailing]);
       }
     }
@@ -25133,7 +25207,7 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
         rows.push({ ...head, isShiftHead, ...trailingFields, _sortKey:sortKey,
           siteLabel:s.siteName||'', typeLabel:'Chở Cước',
           volumePerTrip:'', unitPrice:'', tripCount:siteTripCount(s),
-          wagePerTrip:s.driverWagePerTrip||0, effectiveTrips:siteEffectiveWageTrips(s),
+          wagePerTrip:siteWageDisplayRate(s), effectiveTrips:siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s),
           wageAmount:siteWageTotal(s) });
         return;
       }
@@ -25143,8 +25217,8 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
         const r = { ...head, isShiftHead, ...trailingFields, _sortKey:sortKey,
           siteLabel:s.siteName||'', typeLabel:'Thương Mại',
           volumePerTrip:s.volumePerTrip||0, unitPrice:s.materialUnitPrice||0,
-          tripCount:siteTripCount(s), wagePerTrip:s.driverWagePerTrip||0,
-          effectiveTrips:siteEffectiveWageTrips(s), wageAmount:siteWageTotal(s) };
+          tripCount:siteTripCount(s), wagePerTrip:siteWageDisplayRate(s),
+          effectiveTrips:siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s), wageAmount:siteWageTotal(s) };
         rows.push(r);
         rowsBySiteKey.set(siteKeyOf(sh.date, sh.shiftType, s.siteName), r);
         return;
@@ -25162,9 +25236,9 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
       let mineCount = 0, mineWage = 0;
       completeTrips.forEach((t, tIdx)=>{
         const isMine = (t.pickupDriverId||sh.driverId)===sh.driverId;
-        if(isMine){ mineCount++; mineWage += (tIdx<siteWageTier1Count(s) ? rate1 : rate2); }
+        if(isMine){ mineCount++; mineWage += siteTripWageAt(s, tIdx, t); }
       });
-      const wagePerTrip = rate1; // hiển thị tham khảo (chuyến 1-3) trên dòng tổng — số tiền thật đã tính đúng theo bậc ở mineWage
+      const wagePerTrip = siteIsManualWage(s) ? siteWageDisplayRate(s) : rate1; // hiển thị tham khảo (chuyến 1-3) trên dòng tổng — số tiền thật đã tính đúng theo bậc ở mineWage
       const r2 = { ...head, isShiftHead, ...trailingFields, _sortKey:sortKey,
         siteLabel:s.siteName||'', typeLabel:'Thương Mại',
         volumePerTrip:s.volumePerTrip||0, unitPrice:s.materialUnitPrice||0,
@@ -25226,7 +25300,7 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
       // từ đầu chỉ trong danh sách đã lọc riêng theo người múc, vì thứ tự
       // chuyến của dòng công trình không đổi dù ai lấy hàng.
       const { rate1, rate2 } = siteWageTiers(s);
-      const wagePerTrip = rate1; // dùng để so khớp gộp dòng + hiển thị tham khảo — tiền thật đã tính đúng theo bậc ở g.wage bên dưới
+      const wagePerTrip = siteIsManualWage(s) ? siteWageDisplayRate(s) : rate1; // dùng để so khớp gộp dòng + hiển thị tham khảo — tiền thật đã tính đúng theo bậc ở g.wage bên dưới
       const owner = driverById(sh.driverId);
       const deliverySortKey = chronoKey(sh.date, sh.shiftType);
 
@@ -25239,7 +25313,7 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
         const key = t.pickupDate || '';
         const g = groups.get(key) || {count:0, wage:0};
         g.count += 1;
-        g.wage += (tIdx<siteWageTier1Count(s) ? rate1 : rate2);
+        g.wage += siteTripWageAt(s, tIdx, t);
         groups.set(key, g);
       });
 
