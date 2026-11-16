@@ -802,7 +802,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.0 · 06/11/2026';
+const APP_BUILD = 'Bản sạch 1.1 · 16/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -2078,6 +2078,7 @@ async function loadVehicleWorkingSet(vehicleId){
 }
 async function switchVehicle(vid){
   state.currentVehicleId = vid || null;
+  if(vid) state.vehicleChooserOpen = false;
   closeModal();
   updateVehicleScopeBar();
   // Chỉ 1 xe (chưa thêm xe khác) → activeVehicleIdForEditing() tự quy về
@@ -2105,10 +2106,11 @@ async function switchVehicle(vid){
 function updateVehicleScopeBar(){
   const bar = document.getElementById('vehicleScopeBar');
   if(!bar) return;
-  if(state.vehicles.length>1 && state.currentVehicleId){
-    bar.innerHTML = `<span class="vsb-label" id="vsbBackToTreeLink" style="cursor:pointer;">← Quay Lại Chọn Xe</span>`;
+  const single = state.vehicles.length<=1;
+  if((!single && state.currentVehicleId) || (single && !state.vehicleChooserOpen)){
+    bar.innerHTML = `<span class="vsb-label" id="vsbBackToTreeLink" style="cursor:pointer;">${single ? `🏢 ${escapeHtml(companyShort())} · Chọn Xe / Thêm Xe` : '← Quay Lại Chọn Xe'}</span>`;
     bar.style.display = '';
-    document.getElementById('vsbBackToTreeLink').addEventListener('click', e=>{ e.stopPropagation(); switchVehicle(null); });
+    document.getElementById('vsbBackToTreeLink').addEventListener('click', e=>{ e.stopPropagation(); if(single){ state.vehicleChooserOpen = true; state.showCompanyDashboard = false; } switchVehicle(null); });
   } else {
     bar.innerHTML = '';
     bar.style.display = 'none';
@@ -2137,7 +2139,8 @@ function vehicleDataRef(vehicleId, name){
 ///    xe cụ thể, không tự đoán bừa.
 function activeVehicleIdForEditing(){
   if(state.currentVehicleId) return state.currentVehicleId;
-  if(state.vehicles.length<=1) return (state.vehicles[0]||{}).id || null;
+  // Bản sạch 1.1: nhà xe mới chỉ có 1 xe vẫn mở được màn Chọn Xe (để vào trang công ty, thêm xe).
+  if(state.vehicles.length<=1) return state.vehicleChooserOpen ? null : ((state.vehicles[0]||{}).id || null);
   return null;
 }
 // SỬA (Ông Chủ yêu cầu — "tài xế là chung của công ty, không thuộc riêng
