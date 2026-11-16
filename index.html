@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.4 · 16/11/2026';
+const APP_BUILD = 'Bản sạch 1.5 · 16/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -5524,7 +5524,7 @@ function applyCompanyBranding(){ try{ document.title = companyProfileFilled() ? 
 /// BƯỚC 1 — Chế độ app. 'basic' = Cơ bản (nhà xe: ca, tài xế, lãi/lỗ, công nợ cước).
 /// 'enterprise' = Doanh nghiệp (đủ Kế Toán Nội Bộ, vốn, VAT, kho hoá đơn).
 /// Dữ liệu cũ chưa có appMode → mặc định Doanh nghiệp để không mất gì đang dùng.
-function appMode(){ return (state.settings && state.settings.appMode==='basic') ? 'basic' : 'enterprise'; }
+function appMode(){ return 'enterprise'; } // Bản sạch 1.5 — Ông Chủ bỏ chế độ Cơ Bản, app luôn chạy chế độ Doanh Nghiệp
 function isBasicMode(){ return appMode()==='basic'; }
 function applyAppMode(){ try{ document.body.classList.toggle('mode-basic', isBasicMode()); }catch(e){} }
 function companyProfileCardHtml(){
@@ -24455,7 +24455,7 @@ function renderSettings(){
         </div>
       </div>
     </section>
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🧩 Chế Độ Sử Dụng</h3>
       <div class="card">
         <div class="mode-switch">
