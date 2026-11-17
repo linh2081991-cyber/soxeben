@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.7 · 17/11/2026';
+const APP_BUILD = 'Bản sạch 1.8 · 17/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -1163,9 +1163,94 @@ function getActualScrollEl(){
   return document.scrollingElement || document.documentElement || document.body;
 }
 let savedMainScrollTop = 0;
+/// Bản sạch 1.8 — NHỚ VỊ TRÍ THEO TỪNG MÀN + NEO ĐÚNG MỤC VỪA BẤM.
+/// Trước đây chỉ có 1 ô nhớ: vào sâu 2-3 tầng là đè mất vị trí tầng ngoài,
+/// quay ra phải trượt tìm lại. Giờ mỗi màn (nhận diện bằng tab + các tiêu
+/// đề đầu trang) nhớ riêng vị trí của nó, kèm "neo" là đúng nút/mục Ông Chủ
+/// vừa bấm: quay lại hoặc vẽ lại tại chỗ (VD đổi xe), mục đó nằm y nguyên
+/// đúng chỗ trên màn hình. Không còn ẩn trang 0,2 giây (gây nháy/giật).
+const mainScrollStack = [];
+let lastTapAnchor = null, lastSavedAnchor = null, scrollFixToken = 0, lastAutoSig = null, lastAutoRestoreHit = false;
+function mainScreenSig(){
+  const app = document.getElementById('app'); if(!app) return '';
+  const firstId = (app.querySelector('[id]')||{}).id || '';
+  const heads = Array.from(app.querySelectorAll('h3')).slice(0,2).map(h=>(h.textContent||'').trim().slice(0,40)).join('/');
+  return [state.currentTab, state.showCompanyDashboard?'dash':'', firstId, heads].join('|');
+}
+function scrollAnchorKeyOf(target){
+  const app = document.getElementById('app');
+  const t = target && target.closest ? target.closest('button,a,input,select,label,summary,tr,[id],[data-vid],[data-id],[data-idx],[data-tab]') : null;
+  if(!t || !app || !app.contains(t)) return null;
+  let key = null;
+  if(t.id) key = '#' + CSS.escape(t.id);
+  else {
+    const attrs = Array.from(t.attributes).filter(a=>a.name.startsWith('data-')).map(a=>`[${a.name}="${CSS.escape(a.value)}"]`).join('');
+    if(!attrs) return null;
+    const semCls = Array.from(t.classList).find(c=>!/^btn(-|$)/.test(c) && !['active','selected','link-btn','chk-line'].includes(c));
+    key = t.tagName.toLowerCase() + (semCls ? '.'+CSS.escape(semCls) : '') + attrs;
+  }
+  try { return document.querySelectorAll(key).length===1 ? key : null; } catch(_){ return null; }
+}
+document.addEventListener('click', e=>{
+  try {
+    const key = scrollAnchorKeyOf(e.target);
+    if(!key){ lastTapAnchor = null; return; }
+    lastTapAnchor = { key, top: document.querySelector(key).getBoundingClientRect().top, time: Date.now() };
+  } catch(_){ lastTapAnchor = null; }
+}, true);
+['touchstart','wheel'].forEach(ev=>window.addEventListener(ev, ()=>{ scrollFixToken++; }, { passive:true, capture:true }));
 function saveMainScroll(){
   const el = getActualScrollEl();
-  if(el) savedMainScrollTop = el.scrollTop;
+  const top = el ? el.scrollTop : 0;
+  savedMainScrollTop = top;
+  lastSavedAnchor = (lastTapAnchor && Date.now()-lastTapAnchor.time < 2000) ? { key: lastTapAnchor.key, top: lastTapAnchor.top } : null;
+  const sig = mainScreenSig();
+  lastAutoSig = sig;
+  for(let k=mainScrollStack.length-1;k>=0;k--) if(mainScrollStack[k].sig===sig) mainScrollStack.splice(k,1);
+  mainScrollStack.push({ sig, top, anchor: lastSavedAnchor });
+  if(mainScrollStack.length>40) mainScrollStack.shift();
+}
+function scrollTargetFor(entry){
+  const el = getActualScrollEl();
+  if(!el) return entry.top;
+  if(entry.anchor){
+    try {
+      const list = document.querySelectorAll(entry.anchor.key);
+      if(list.length===1){
+        const r = list[0].getBoundingClientRect();
+        if(r.width>0 || r.height>0) return el.scrollTop + (r.top - entry.anchor.top);
+      }
+    } catch(_){}
+  }
+  return entry.top;
+}
+function runScrollFix(getTarget){
+  const appEl = document.getElementById('app');
+  if(appEl) appEl.style.visibility = '';
+  const token = ++scrollFixToken;
+  const apply = () => {
+    if(token!==scrollFixToken) return; // Ông Chủ đã tự chạm/cuộn → không giành lại
+    const el = getActualScrollEl(); if(!el) return;
+    const t = Math.max(0, Math.round(getTarget()));
+    if(Math.abs(el.scrollTop - t) > 1) el.scrollTop = t;
+  };
+  apply(); // áp NGAY trong cùng lượt vẽ → mắt không thấy bước nhảy
+  requestAnimationFrame(()=>requestAnimationFrame(apply));
+  setTimeout(apply, 60);
+  setTimeout(apply, 200);
+}
+function findScrollEntry(sig){
+  for(let k=mainScrollStack.length-1;k>=0;k--) if(mainScrollStack[k].sig===sig) return mainScrollStack[k];
+  return null;
+}
+/// Gọi cuối renderAll(): màn vừa vẽ khác màn trước và đã từng nhớ vị trí → tự về đúng chỗ.
+function autoRestoreScrollForScreen(){
+  const sig = mainScreenSig();
+  lastAutoRestoreHit = false;
+  if(sig===lastAutoSig) return;
+  lastAutoSig = sig;
+  const entry = findScrollEntry(sig);
+  if(entry){ lastAutoRestoreHit = true; runScrollFix(()=>scrollTargetFor(entry)); }
 }
 /// SỬA 2026-08-20 (Ông Chủ báo vẫn còn về đầu trang dù logic đã đúng khi
 /// test kỹ trên Chromium — nhiều khả năng do Safari/iOS đôi khi vẽ lại
@@ -1189,18 +1274,12 @@ function saveMainScroll(){
 /// cuộn lên đầu. Nhớ riêng vị trí từng tầng ở đây.
 const partnersFlow = { dashScroll: null, listScroll: null, fromList: false };
 function currentMainScrollTop(){ const el = getActualScrollEl(); return el ? el.scrollTop : 0; }
-function restoreMainScrollTo(v){ if(v!==null && v!==undefined) savedMainScrollTop = v; restoreMainScroll(); }
+function restoreMainScrollTo(v){ if(v!==null && v!==undefined){ savedMainScrollTop = v; lastAutoSig = mainScreenSig(); runScrollFix(()=>v); } else restoreMainScroll(); }
 function restoreMainScroll(){
-  const appEl = document.getElementById('app');
-  if(appEl) appEl.style.visibility = 'hidden';
-  const apply = () => {
-    const el = getActualScrollEl();
-    if(el) el.scrollTop = savedMainScrollTop;
-  };
-  const reveal = () => { if(appEl) appEl.style.visibility = ''; };
-  requestAnimationFrame(()=>requestAnimationFrame(apply));
-  setTimeout(apply, 60);
-  setTimeout(()=>{ apply(); reveal(); }, 200);
+  const sig = mainScreenSig();
+  lastAutoSig = sig;
+  const entry = findScrollEntry(sig) || { top: savedMainScrollTop, anchor: lastSavedAnchor };
+  runScrollFix(()=>scrollTargetFor(entry));
 }
 // SỬA 2026-08-27 (Ông Chủ báo — bấm "Xem Chi Tiết Vận Hành" từ vị trí
 // cuộn sâu trong trang tài xế, màn mới lại hiện đúng ngay khúc cuối thay
@@ -1212,13 +1291,8 @@ function restoreMainScroll(){
 // 2 setTimeout dự phòng) như restoreMainScroll(), chỉ khác là luôn đưa về
 // 0 thay vì về đúng vị trí đã lưu.
 function scrollMainToTop(){
-  const apply = () => {
-    const el = getActualScrollEl();
-    if(el) el.scrollTop = 0;
-  };
-  requestAnimationFrame(()=>requestAnimationFrame(apply));
-  setTimeout(apply, 60);
-  setTimeout(apply, 200);
+  lastAutoSig = null; // đang sang màn mới — lần quay về màn cũ sẽ tự về đúng chỗ
+  runScrollFix(()=>0);
 }
 
 /// Lightweight bottom-sheet modal used for explainer/detail popups (e.g.
@@ -22629,7 +22703,7 @@ function renderCompanyDashboardPage(preserveScroll){
       <button class="btn btn-ghost btn-block" id="cashFlowLedgerBtn" style="margin-top:2px;">📋 Chi Tiết — Toàn Bộ Sao Kê Nộp Vào/Rút Ra</button>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>⚙️ Thông Tin Dự Án</h3>
       <div class="card">
         <div style="font-weight:800; font-size:13px; margin-bottom:8px;">🚛 Vốn Đầu Tư Ban Đầu — Lộ Trình Từng Xe</div>
@@ -26282,6 +26356,7 @@ ${escapeHtml((e && e.stack) || '')}</div>
   document.querySelectorAll('nav.tabbar button').forEach(b=>{
     b.classList.toggle('active', b.dataset.tab===state.currentTab);
   });
+  try { autoRestoreScrollForScreen(); } catch(_){}
 }
 function refreshSiteDatalist(){
   const dl=document.getElementById('siteNamesList');
@@ -26310,10 +26385,13 @@ function refreshGoodsTypesDatalist(){
 /// trên. Icon vẫn nảy lên khi bấm tab (tab-pop) như cũ, không đổi.
 document.querySelectorAll('nav.tabbar button').forEach(btn=>{
   btn.addEventListener('click', ()=>{
+    const prevTab = state.currentTab;
+    saveMainScroll(); // nhớ vị trí màn đang rời
     state.currentTab = btn.dataset.tab;
     state.view='list'; state.draftShift=null;
     state.showCompanyDashboard = false;
     renderAll();
+    if(!lastAutoRestoreHit && prevTab!==state.currentTab) scrollMainToTop();
     // Icon nảy lên ngay lúc bấm — xoá class cũ trước (đề phòng bấm liên
     // tục cùng 1 tab) rồi thêm lại để trigger animation từ đầu mỗi lần.
     const icon = btn.querySelector('.ic');
