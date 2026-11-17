@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.8 · 17/11/2026';
+const APP_BUILD = 'Bản sạch 1.9 · 17/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -2154,12 +2154,14 @@ async function loadVehicleWorkingSet(vehicleId){
       state.allVehiclesSettings[vehicleId] = state.settings;
       state.allVehiclesMonthlyBonuses[vehicleId] = state.monthlyBonuses;
     }
+    state.workingSetVehicleId = vehicleId || null; // Bản sạch 1.9
   } catch(e) {
     showToast('Lỗi tải dữ liệu xe: ' + (e?.message || e));
   }
 }
 async function switchVehicle(vid){
   state.currentVehicleId = vid || null;
+  if(vid){ state.lastViewedVehicleId = vid; state.tabVehicleId = vid; }
   if(vid) state.vehicleChooserOpen = false;
   closeModal();
   updateVehicleScopeBar();
@@ -2192,7 +2194,7 @@ function updateVehicleScopeBar(){
   if((!single && state.currentVehicleId) || (single && !state.vehicleChooserOpen)){
     bar.innerHTML = `<span class="vsb-label" id="vsbBackToTreeLink" style="cursor:pointer;">${single ? `🏢 ${escapeHtml(companyShort())} · Chọn Xe / Thêm Xe` : '← Quay Lại Chọn Xe'}</span>`;
     bar.style.display = '';
-    document.getElementById('vsbBackToTreeLink').addEventListener('click', e=>{ e.stopPropagation(); if(single){ state.vehicleChooserOpen = true; state.showCompanyDashboard = false; } switchVehicle(null); });
+    document.getElementById('vsbBackToTreeLink').addEventListener('click', e=>{ e.stopPropagation(); if(state.currentTab==='results' || state.currentTab==='settings') state.currentTab='shifts'; if(single){ state.vehicleChooserOpen = true; state.showCompanyDashboard = false; } switchVehicle(null); });
   } else {
     bar.innerHTML = '';
     bar.style.display = 'none';
@@ -2221,9 +2223,60 @@ function vehicleDataRef(vehicleId, name){
 ///    xe cụ thể, không tự đoán bừa.
 function activeVehicleIdForEditing(){
   if(state.currentVehicleId) return state.currentVehicleId;
+  const tabOwnsVehicle = !state.showCompanyDashboard && (state.currentTab==='results' || state.currentTab==='settings');
   // Bản sạch 1.1: nhà xe mới chỉ có 1 xe vẫn mở được màn Chọn Xe (để vào trang công ty, thêm xe).
-  if(state.vehicles.length<=1) return state.vehicleChooserOpen ? null : ((state.vehicles[0]||{}).id || null);
+  if(state.vehicles.length<=1) return (state.vehicleChooserOpen && !tabOwnsVehicle) ? null : ((state.vehicles[0]||{}).id || null);
+  // Bản sạch 1.9 — Kết Quả / Cài Đặt chạy độc lập, không bắt chọn xe: dùng xe riêng
+  // của tab (tabVehicleId), CHỈ khi dữ liệu đang nạp đúng là của xe đó → lưu luôn đúng chỗ.
+  if(tabOwnsVehicle && state.tabVehicleId && state.workingSetVehicleId===state.tabVehicleId) return state.tabVehicleId;
   return null;
+}
+function tabVehicleMode(){
+  return !state.currentVehicleId && (state.vehicles||[]).length>1 && !state.showCompanyDashboard &&
+    (state.currentTab==='results' || state.currentTab==='settings');
+}
+/// Kết Quả / Cài Đặt mở khi chưa chọn xe (≥2 xe): tự nạp xe gần nhất (hoặc xe đầu) rồi vẽ lại.
+function prepareTabVehicle(){
+  if(!tabVehicleMode()) return false;
+  const vs = state.vehicles;
+  const pick = (id)=> id && vs.some(v=>v.id===id) ? id : null;
+  const id = pick(state.tabVehicleId) || pick(state.lastViewedVehicleId) || ((vs.find(v=>v.isPrimary)||vs[0]||{}).id);
+  if(!id) return false;
+  state.tabVehicleId = id;
+  const app = document.getElementById('app');
+  if(state.tabVehicleLoadFailed===id){
+    app.innerHTML = `<section class="group"><div class="card" style="text-align:center;">
+      <div style="font-weight:800; margin-bottom:8px;">Chưa tải được dữ liệu xe, thưa Ông Chủ.</div>
+      <button class="btn btn-accent" id="tabVehRetryBtn">Thử Lại</button></div></section>`;
+    document.getElementById('tabVehRetryBtn').addEventListener('click', ()=>{ state.tabVehicleLoadFailed = null; renderAll(); });
+    return true;
+  }
+  app.innerHTML = `<section class="group"><div class="card" style="text-align:center; color:var(--ink-soft);">Đang tải dữ liệu xe…</div></section>`;
+  const tab = state.currentTab;
+  loadVehicleWorkingSet(id).then(()=>{
+    if(state.workingSetVehicleId!==id) state.tabVehicleLoadFailed = id;
+    if(state.currentTab===tab && !state.currentVehicleId && !state.showCompanyDashboard) renderAll();
+  });
+  return true;
+}
+/// Thanh chọn xe ngay đầu tab Kết Quả / Cài Đặt (chỉ hiện khi tab đang tự giữ xe riêng).
+function injectTabVehicleSwitcher(){
+  if(!tabVehicleMode() || activeVehicleIdForEditing()!==state.tabVehicleId) return;
+  const app = document.getElementById('app'); if(!app) return;
+  app.insertAdjacentHTML('afterbegin', `<section class="group" id="tabVehSwitcher">
+    <div style="font-weight:800; font-size:13px; margin-bottom:6px;">🚛 Đang xem xe:</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      ${state.vehicles.map(v=>`<button class="btn btn-sm ${v.id===state.tabVehicleId?'btn-accent':'btn-ghost'} tab-veh-pick" data-vid="${v.id}" style="flex:1 1 28%; font-weight:800;">${v.id===state.tabVehicleId?'✅ ':''}${escapeHtml(v.plate||v.name||'')}</button>`).join('')}
+    </div></section>`);
+  app.querySelectorAll('.tab-veh-pick').forEach(b=>b.addEventListener('click', async ()=>{
+    const vid = b.dataset.vid;
+    if(vid===state.tabVehicleId) return;
+    saveMainScroll();
+    state.tabVehicleId = vid; state.lastViewedVehicleId = vid;
+    await loadVehicleWorkingSet(vid);
+    if(state.workingSetVehicleId!==vid) state.tabVehicleLoadFailed = vid;
+    renderAll(); restoreMainScroll();
+  }));
 }
 // SỬA (Ông Chủ yêu cầu — "tài xế là chung của công ty, không thuộc riêng
 // xe nào, hôm nay lái xe này mai lái xe khác"): trước đây dùng
@@ -17776,7 +17829,7 @@ function renderResults(){
   // không báo gì. Với Ông Chủ hiện tại (đúng 1 xe), activeVehicleIdForEditing()
   // LUÔN trả về đúng xe đó (xem chú thích hàm này) — lá chắn này không
   // bao giờ kích hoạt, KHÔNG đổi gì hành vi app đang chạy.
-  if(!activeVehicleIdForEditing()){ renderChooseVehiclePrompt(); return; }
+  if(!activeVehicleIdForEditing()){ if(prepareTabVehicle()) return; renderChooseVehiclePrompt(); return; }
   const app=document.getElementById('app');
   if(!state.resultsRange) state.resultsRange = currentMonthRange();
   const { from, to } = state.resultsRange;
@@ -24594,7 +24647,7 @@ function renderSettings(){
   // Chủ hiện tại (đúng 1 xe), activeVehicleIdForEditing() LUÔN trả về
   // đúng xe đó — lá chắn này không bao giờ kích hoạt, KHÔNG đổi gì hành
   // vi app đang chạy hôm nay.
-  if(!activeVehicleIdForEditing()){ renderChooseVehiclePrompt(); return; }
+  if(!activeVehicleIdForEditing()){ if(prepareTabVehicle()) return; renderChooseVehiclePrompt(); return; }
   const app=document.getElementById('app');
   const s = state.settings;
   const themeMode = currentThemeMode();
@@ -26340,6 +26393,7 @@ function renderAll(){
     } else {
       renderSettings();
     }
+    if(state.currentTab==='results' || state.currentTab==='settings') injectTabVehicleSwitcher();
   } catch(e){
     console.error('renderAll() lỗi khi vẽ tab', state.currentTab, ':', e);
     const app = document.getElementById('app');
