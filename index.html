@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.6 · 16/11/2026';
+const APP_BUILD = 'Bản sạch 1.7 · 17/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -13686,7 +13686,7 @@ function renderStrategyHub(){
         <button class="btn btn-accent btn-block" id="hubGoAppraisalBtn">🧮 THẨM ĐỊNH CÔNG TRÌNH TRƯỚC KHI NHẬN</button>
       </div>
     </section>
-    <section class="group">
+    <section class="group sx-removed">
       <div class="card" style="text-align:center; padding:26px 18px;">
         <div style="font-size:42px; margin-bottom:8px;">👥</div>
         <div style="font-weight:700; font-size:15.5px; margin-bottom:6px;">Có Nên Tuyển Thêm Lái Xe?</div>
@@ -13694,7 +13694,7 @@ function renderStrategyHub(){
         <button class="btn btn-accent btn-block" id="hubGoHiringBtn">👥 CÓ NÊN TUYỂN THÊM LÁI XE?</button>
       </div>
     </section>
-    <section class="group">
+    <section class="group sx-removed">
       <div class="card" style="text-align:center; padding:26px 18px;">
         <div style="font-size:42px; margin-bottom:8px;">🎁</div>
         <div style="font-weight:700; font-size:15.5px; margin-bottom:6px;">Đề Xuất Thưởng Cuối Tháng</div>
@@ -14464,13 +14464,24 @@ function latestKnownFuelUnitPrice(){
 /// priority; if that's still 0 (never set), falls back to the most recent
 /// real đơn giá dầu recorded on any ca.
 function currentFuelUnitPriceForAppraisal(){
-  return (Number(state.settings.currentFuelUnitPrice)||0) || latestKnownFuelUnitPrice();
+  if(Number(state.settings.currentFuelUnitPrice)>0) return Number(state.settings.currentFuelUnitPrice);
+  const priced = appraisalFleetShifts().filter(sh=>Number(sh.fuelUnitPrice)>0);
+  if(priced.length===0) return 0;
+  priced.sort((a,b)=>chronoKey(b.date,b.shiftType)-chronoKey(a.date,a.shiftType));
+  return Number(priced[0].fuelUnitPrice)||0;
 }
 /// Fleet-wide historical average lít/km, computed over every ca ever
 /// logged (read-only — reuses the exact same shiftFuelConsumed/
 /// shiftOdoDriven getters the frozen P&L math uses, never redefines them).
+// Bản sạch 1.7 — ca của TOÀN ĐỘI XE (mọi xe), bỏ đúng các ca Ông Chủ đã loại
+// khỏi số liệu gần đây như operationalShifts(). Chỉ dùng cho Thẩm Định.
+function appraisalFleetShifts(){
+  const excluded = getExcludedRecentShiftIds();
+  const all = shiftsCompanyWideSafe();
+  return excluded.size===0 ? all : all.filter(sh=>!excluded.has(sh.id));
+}
 function historicalAvgFuelPerKm(){
-  const shifts = operationalShifts();
+  const shifts = appraisalFleetShifts();
   const totalKm = shifts.reduce((s,sh)=>s+shiftOdoDriven(sh),0);
   const totalFuel = shifts.reduce((s,sh)=>s+shiftFuelConsumed(sh),0);
   return totalKm>0 ? totalFuel/totalKm : 0;
@@ -14481,7 +14492,7 @@ function historicalAvgFuelPerKm(){
 /// ánh đúng chi phí nhân công thực tế của đội xe. Dùng để mô phỏng công
 /// trình dự kiến theo đúng "thông số hiện tại đang vận hành".
 function historicalAvgWagePerTrip(){
-  const shifts = operationalShifts();
+  const shifts = appraisalFleetShifts();
   const totalTrips = shifts.reduce((s,sh)=>s+(sh.siteLogs||[]).reduce((x,l)=>x+siteTripCount(l),0),0);
   const totalWage = shifts.reduce((s,sh)=>s+shiftTotalTripWage(sh),0);
   return totalTrips>0 ? totalWage/totalTrips : 0;
@@ -14490,7 +14501,7 @@ function historicalAvgWagePerTrip(){
 /// ca Hoạt Động đã thực sự có ghi nhận tiền ăn, dùng cho mô phỏng công
 /// trình dự kiến vì tiền ăn tính theo CA chứ không theo chuyến.
 function historicalAvgFoodPerShift(){
-  const shifts = operationalShifts().filter(sh=>sh.status==='active' && Number(sh.foodAllowance)>0);
+  const shifts = appraisalFleetShifts().filter(sh=>sh.status==='active' && Number(sh.foodAllowance)>0);
   if(shifts.length===0) return 0;
   const total = shifts.reduce((s,sh)=>s+(Number(sh.foodAllowance)||0),0);
   return total/shifts.length;
@@ -14803,7 +14814,8 @@ function renderProjectAppraisal(preserveScroll){
   // "đang muốn vào Thẩm Định Công Trình" vẫn được nhớ đúng, chọn xe xong
   // dispatcher mới quay lại đúng chỗ.
   state.strategyView = 'appraisal';
-  if(!activeVehicleIdForEditing()){ renderChooseVehiclePrompt(); return; }
+  // Bản sạch 1.7 (Ông Chủ yêu cầu): Trợ Lý chạy thẳng, KHÔNG bắt chọn xe — dữ
+  // liệu thẩm định lưu chung công ty, số liệu lịch sử lấy toàn đội xe.
   if(!preserveScroll) scrollMainToTop();
   const app = document.getElementById('app');
   const fuelPerKm = historicalAvgFuelPerKm();
@@ -26241,13 +26253,13 @@ function renderAll(){
       // app đã làm (dòng ~9977/10011/11369), để MỌI lượt renderAll() đều
       // trả về đúng sub-màn đang xem, không riêng gì trường hợp đổi xe.
       if(state.strategyView==='appraisal') renderProjectAppraisal();
-      else if(state.strategyView==='bonus') renderBonusAdvisor();
+      else if(state.strategyView==='bonus') renderStrategyHub(); // Bản sạch 1.7 — đã bỏ Đề Xuất Thưởng
       else if(state.strategyView==='ai') renderStrategy();
       else if(state.strategyView==='ai-hub') renderStrategyBranchHub();
       else if(state.strategyView==='results-hub') renderResultsReadHub();
       else if(state.strategyView==='results-real') renderResultsReal();
       else if(state.strategyView==='results-whatif') renderResultsWhatIf();
-      else if(state.strategyView==='hiring') renderHiringAdvisor();
+      else if(state.strategyView==='hiring') renderStrategyHub(); // Bản sạch 1.7 — đã bỏ Tuyển Thêm Lái Xe
       else renderStrategyHub();
     } else if(state.currentTab==='results'){
       renderResults();
