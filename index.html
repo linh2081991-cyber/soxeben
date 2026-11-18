@@ -631,6 +631,12 @@
   table.dash thead th{ color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:.02em; border-bottom:2px solid var(--border); }
   table.dash tbody tr:last-child td{ border-bottom:none; }
   .dash-wrap{ overflow-x:auto; }
+  /* Bản 2.3 — bảng nhiều cột trên điện thoại */
+  table.dash th, table.dash td{ padding:8px 4px; }
+  table.dash td:not(:first-child), table.dash th:not(:first-child){ white-space:nowrap; font-size:12px; }
+  table.dash td:first-child{ min-width:88px; }
+  table.grid-table.split-table td:first-child{ min-width:118px; }
+  table.grid-table.split-table td.num, table.grid-table.split-table th.num{ font-size:11.5px; padding:7px 5px; }
   .dash-highlight td{ font-weight:800; color:var(--ink); }
   /* Bảng KẺ Ô ĐỦ 4 CẠNH (khác .dash ở trên chỉ có gạch ngang giữa các
      dòng) — dùng cho các bảng cần soi rất kỹ từng ô (Chi Tiết Giao Dịch
@@ -809,7 +815,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.2 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.3 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -1431,7 +1437,7 @@ function computeMaintenanceWarnings(){
 function computeAllWarnings(){
   const docs = computeDocumentWarnings();
   const maint = computeMaintenanceWarnings();
-  const loans = computeLoanDueWarnings();
+  const loans = []; // Bản 2.3 — mục Khoản Vay đã bỏ khỏi app nên không nhắc hạn vay nữa
   const invoices = computeInvoiceWarnings();
   const missingPickupDates = computeMissingPickupDateWarnings();
   const idleTrips = computeIdleShiftTripWarnings(); // Bản 2.0
@@ -2227,7 +2233,8 @@ function updateVehicleScopeBar(){
   const bar = document.getElementById('vehicleScopeBar');
   if(!bar) return;
   const single = state.vehicles.length<=1;
-  if((!single && state.currentVehicleId) || (single && !state.vehicleChooserOpen)){
+  const onShiftsTab = state.currentTab==='shifts' && !state.showCompanyDashboard; // Bản 2.3
+  if(onShiftsTab && ((!single && state.currentVehicleId) || (single && !state.vehicleChooserOpen))){
     bar.innerHTML = `<span class="vsb-label" id="vsbBackToTreeLink" style="cursor:pointer;">${single ? `🏢 ${escapeHtml(companyShort())} · Chọn Xe / Thêm Xe` : '← Quay Lại Chọn Xe'}</span>`;
     bar.style.display = '';
     document.getElementById('vsbBackToTreeLink').addEventListener('click', e=>{ e.stopPropagation(); if(state.currentTab==='results' || state.currentTab==='settings') state.currentTab='shifts'; if(single){ state.vehicleChooserOpen = true; state.showCompanyDashboard = false; } switchVehicle(null); });
@@ -2297,8 +2304,12 @@ function prepareTabVehicle(){
 }
 /// Thanh chọn xe ngay đầu tab Kết Quả / Cài Đặt (chỉ hiện khi tab đang tự giữ xe riêng).
 function injectTabVehicleSwitcher(){
-  if(!tabVehicleMode() || activeVehicleIdForEditing()!==state.tabVehicleId) return;
-  const app = document.getElementById('app'); if(!app) return;
+  if(state.showCompanyDashboard || (state.vehicles||[]).length<=1) return;
+  if(!(state.currentTab==='results' || state.currentTab==='settings')) return;
+  const cur = activeVehicleIdForEditing(); if(!cur) return;
+  if(!state.currentVehicleId && cur!==state.tabVehicleId) return;
+  state.tabVehicleId = cur;
+  const app = document.getElementById('app'); if(!app || document.getElementById('tabVehSwitcher')) return;
   app.insertAdjacentHTML('afterbegin', `<section class="group" id="tabVehSwitcher">
     <div style="font-weight:800; font-size:13px; margin-bottom:6px;">🚛 Đang xem xe:</div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -2308,6 +2319,7 @@ function injectTabVehicleSwitcher(){
     const vid = b.dataset.vid;
     if(vid===state.tabVehicleId) return;
     saveMainScroll();
+    if(state.currentVehicleId){ await switchVehicle(vid); restoreMainScroll(); return; } // đang chọn xe ở Ca Làm Việc → đổi đồng bộ
     state.tabVehicleId = vid; state.lastViewedVehicleId = vid;
     await loadVehicleWorkingSet(vid);
     if(state.workingSetVehicleId!==vid) state.tabVehicleLoadFailed = vid;
@@ -4936,7 +4948,7 @@ function computeVehicleAccrualProfit(vid, from, to){
     ['Phát sinh trong ca', sumOf(sh=>Number(sh.incidentalCost)||0)], ['Luật đường phát sinh theo ca', sumOf(sh=>Number(sh.roadFeeIncidental)||0)],
     ['Giá vốn hàng mua từ mỏ', sumOf(shiftMaterialCost)], ['Chi phí hoá đơn bù (sau VAT hưởng)', invoiceSupplementCost]
   ].filter(x=>Math.abs(Number(x[1])||0)>0.5);
-  const openShifts = shifts.filter(shiftFuelEndPending)
+  const openShifts = shifts.filter(sh=>sh.status==='active' && shiftFuelEndPending(sh))
     .map(sh=>({ date: sh.date, charged: shiftFuelCost(sh), hasOdoEnd: Number(sh.odoEnd)>0 }));
   return { totalRevenue: breakEven.totalRevenue, grossProfit, fixedCost: breakEven.fixedCost + tollFee + driverExtraCost, tollFee, invoiceSupplementCost, netProfit, tripCount: shifts.length, totalTrips: breakEven.totalTrips||0, activeShifts, fixedParts, variableParts, openShifts, lineSplit };
 }
@@ -5416,7 +5428,7 @@ function renderTollFeeMonthTable(){
   const wrap = document.getElementById('tollFeeMonthListWrap');
   if(!wrap) return;
   const sorted = [...state.tollFeeByMonth].sort((a,b)=>b.month.localeCompare(a.month));
-  wrap.innerHTML = sorted.length===0 ? '<div class="hint" style="margin:0;">Chưa có tháng nào — bấm "🌉➕ Thêm Tháng" ở Cài Đặt để bắt đầu.</div>' : `
+  wrap.innerHTML = sorted.length===0 ? '<div class="hint" style="margin:0;">Chưa có tháng nào — chọn tháng rồi bấm "+ Thêm Tháng".</div>' : `
     <div class="grid-table-wrap">
       <table class="grid-table">
         <thead><tr><th>Tháng</th><th class="num">Số Tiền</th><th></th></tr></thead>
@@ -5435,7 +5447,7 @@ function renderHousingUtilMonthTable(){
   const wrap = document.getElementById('housingUtilMonthListWrap');
   if(!wrap) return;
   const sorted = [...state.housingUtilitiesByMonth].sort((a,b)=>b.month.localeCompare(a.month));
-  wrap.innerHTML = sorted.length===0 ? '<div class="hint" style="margin:0;">Chưa có tháng nào — bấm "🏠➕ Thêm Tháng" ở Cài Đặt để bắt đầu.</div>' : `
+  wrap.innerHTML = sorted.length===0 ? '<div class="hint" style="margin:0;">Chưa có tháng nào — chọn tháng rồi bấm "+ Thêm Tháng".</div>' : `
     <div class="grid-table-wrap">
       <table class="grid-table">
         <thead><tr><th>Tháng</th><th class="num">Thuê Nhà</th><th class="num">Điện Nước</th><th></th></tr></thead>
@@ -7827,7 +7839,7 @@ function businessLineSplitHtml(sp, fixed, title){
   return `
       <div style="font-weight:800; margin:14px 0 6px;">${title||'🔀 Tách Chở Cước / Thương Mại'}</div>
       <div class="grid-table-wrap">
-        <table class="grid-table">
+        <table class="grid-table split-table">
           <thead><tr><th style="text-align:left;">Khoản</th><th class="num">🚚 Chở Cước</th><th class="num">🪨 Thương Mại</th><th class="num">Tổng</th></tr></thead>
           <tbody>
             ${row('Số chuyến', f.trips.toLocaleString('vi-VN'), c.trips.toLocaleString('vi-VN'), sp.trips.toLocaleString('vi-VN'))}
@@ -9411,7 +9423,9 @@ function driverPersonalRevenueCostStatsInRange(driverId, from, to, shiftsList){
 /// bình cuối ca bằng đầu ca) cho tới khi nhập dầu cuối ca; nhập xong thì về lại công thức chuẩn.
 /// Cùng điều kiện với cảnh báo "Chưa nhập lượng dầu cuối ca" ở computeShiftIssues().
 function shiftFuelEndPending(sh){
-  return sh.status==='active' && !(Number(sh.fuelEnd)>0) && ((Number(sh.fuelStart)||0)+(Number(sh.fuelAdded)||0))>0;
+  // Bản 2.3 — mọi trạng thái ca: chưa nhập dầu cuối ca → tạm tính tiêu hao 0 (trước đây ca nghỉ để trống
+  // dầu cuối bị tính như đã tiêu hết dầu trong bình).
+  return !(Number(sh.fuelEnd)>0) && ((Number(sh.fuelStart)||0)+(Number(sh.fuelAdded)||0))>0;
 }
 function shiftFuelConsumed(sh){
   if(shiftFuelEndPending(sh)) return 0; // Bản 2.0 (Ông Chủ duyệt): chưa nhập dầu cuối ca → tạm tính 0 ở mọi trang
@@ -9550,6 +9564,13 @@ function findPreviousShift(dateStr, shiftType, excludeId){
     if(s.id===excludeId) continue;
     const k = chronoKey(s.date, s.shiftType);
     if(k<targetKey && k>bestKey){ best=s; bestKey=k; }
+  }
+  // Bản 2.3 — ca nghỉ để trống ODO/dầu cuối: xe đứng yên → số cuối = số đầu (+ dầu đổ thêm),
+  // để ca kế tiếp nhận đúng ODO/dầu đầu ca thay vì 0.
+  if(best && best.status!=='active' && (!(Number(best.odoEnd)>0) || !(Number(best.fuelEnd)>0))){
+    best = Object.assign({}, best, {
+      odoEnd: Number(best.odoEnd)>0 ? best.odoEnd : best.odoStart,
+      fuelEnd: Number(best.fuelEnd)>0 ? best.fuelEnd : (Number(best.fuelStart)||0)+(Number(best.fuelAdded)||0) });
   }
   return best;
 }
@@ -9735,10 +9756,11 @@ function renderHeader(){
   const sub=document.getElementById('pageSub');
   const action=document.getElementById('headerAction');
   action.innerHTML='';
+  if(state.showCompanyDashboard){ title.textContent='Công Ty'; sub.textContent=companyFull(); return; } // Bản 2.3
   if(state.currentTab==='shifts'){
     if(state.view==='form'){
       title.textContent = state.draftShift.isNew ? 'Thêm Ca Mới' : 'Sửa Ca';
-      sub.textContent = state.draftShift.date;
+      sub.textContent = formatDateVN(state.draftShift.date);
       const back=document.createElement('button');
       back.className='btn btn-ghost btn-sm'; back.textContent='Đóng';
       back.onclick=()=>{ state.view='list'; state.draftShift=null; renderAll(); restoreMainScroll(); };
@@ -10058,7 +10080,7 @@ function renderChooseVehiclePrompt(){
               <span style="font-weight:800; font-size:19px; flex:1;">${escapeHtml(v.plate||v.name||'Xe')}</span>
             </button>
             <button class="vehicle-map-edit" data-vid="${v.id}" style="background:none; border:none; color:var(--ink-soft); font-size:18px; padding:4px 6px; flex-shrink:0;">✏️</button>
-            ${(!v.isPrimary && (state.allVehiclesShifts[v.id]||[]).length===0) ? `<button class="vehicle-map-delete" data-vid="${v.id}" data-vname="${escapeHtml(v.name||v.plate||'')}" style="background:none; border:none; color:var(--loss); font-size:18px; padding:4px 6px; flex-shrink:0;">🗑️</button>` : ''}
+            <!-- Bản 2.3 (Ông Chủ yêu cầu): app là sổ lưu dữ liệu — không xoá xe dù đã bán, chỉ cho sửa. -->
           </div>`).join('')}
       </div>
       <button class="btn btn-ghost btn-block" id="vehicleMapAddBtn" style="margin-top:6px;">+ Thêm Xe</button>
@@ -10672,7 +10694,7 @@ function renderShiftForm(){
             <input type="text" inputmode="decimal" id="f_fuelPrice">
           </div>
         </div>
-        <div class="field">
+        <div class="field sx-removed">
           <label>Tiền dầu trả bằng nguồn nào</label>
           <div class="seg" id="f_fuelRefillMethod">
             <button data-val="bank" class="${(sh.fuelRefillMethod||'bank')!=='cash'?'active':''}">🏦 TK Doanh Nghiệp</button>
@@ -10736,7 +10758,7 @@ function renderShiftForm(){
           <label>Số tiền ứng</label>
           <input type="text" inputmode="decimal" id="f_advance">
         </div>
-        <div class="field">
+        <div class="field sx-removed">
           <label>Tiền ứng trả bằng nguồn nào</label>
           <div class="seg" id="f_advanceMethod">
             <button data-val="bank" class="${(sh.advanceMethod||'bank')!=='cash'?'active':''}">🏦 TK Doanh Nghiệp</button>
@@ -11861,6 +11883,11 @@ async function saveDraftShift(){
     } }
   const sh = state.draftShift;
   if(!sh.driverId){ showToast('Hãy chọn tài xế trước khi lưu.'); return; }
+  // Bản 2.3 — ca nghỉ (không bật "Có vận hành" ở Chính Sách Chi Phí): xe đứng yên, để trống số cuối thì lấy bằng số đầu.
+  if(sh.status!=='active' && (state.settings.costPolicies[sh.status]||{}).operations!==true){
+    if(!(Number(sh.odoEnd)>0)) sh.odoEnd = Number(sh.odoStart)||0;
+    if(!(Number(sh.fuelEnd)>0)) sh.fuelEnd = (Number(sh.fuelStart)||0)+(Number(sh.fuelAdded)||0);
+  }
   // Guard against the exact class of bug that silently understates the fleet's
   // total fuel cost: a shift with real fuel consumed but fuelUnitPrice left
   // at 0 contributes 0đ to shiftFuelCost() (consumed × 0), which drags every
@@ -18114,25 +18141,25 @@ function renderResults(){
           <thead><tr><th>Khoản</th><th class="num">Số Tiền</th></tr></thead>
           <tbody>
             <tr><td>Doanh thu</td><td class="num">${fmtVND(gTotal.revenue)}</td></tr>
-            <tr><td>− Giá vốn hàng mua (thương mại)</td><td class="num">${fmtVND(gTotal.materialCost)}</td></tr>
-            <tr><td>− Chi phí mua hoá đơn bù</td><td class="num">${fmtVND(gTotal.supplementCost)}</td></tr>
+${Math.abs(Number(gTotal.materialCost)||0)>0.5 ? `<tr><td>− Giá vốn hàng mua (thương mại)</td><td class="num">${fmtVND(gTotal.materialCost)}</td></tr>` : ''}
+            ${Math.abs(Number(gTotal.supplementCost)||0)>0.5 ? `<tr><td>− Chi phí mua hoá đơn bù</td><td class="num">${fmtVND(gTotal.supplementCost)}</td></tr>` : ''}
             <tr class="grid-total-row"><td>= LÃI GỘP MUA-BÁN</td><td class="num" style="color:${gTotal.takeHomeTotal>=0?'var(--profit)':'var(--loss)'}">${gTotal.takeHomeTotal>=0?'+':''}${fmtVND(gTotal.takeHomeTotal)}</td></tr>
             <tr><td>− Chi phí vận hành (dầu, lương chuyến/cứng, ăn, phát sinh, sửa chữa/khấu hao, luật đường, nhà, điện nước, cầu đường)</td><td class="num">${fmtVND(gTotal.operatingCashCost + repairTotal + roadFee + houseRent + utilities + tollFee)}</td></tr>
-            <tr class="grid-total-row"><td>= Lợi nhuận gộp vận hành</td><td class="num" style="color:${(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)>=0?'var(--profit)':'var(--loss)'}">${fmtVND(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)}</td></tr>
+            <tr class="grid-total-row"><td>= Lãi sau chi phí vận hành</td><td class="num" style="color:${(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)>=0?'var(--profit)':'var(--loss)'}">${fmtVND(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)}</td></tr>
             <tr><td>− Khấu hao xe (trong kỳ, tính từ ca đầu tiên của xe)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.depreciation)}</td></tr>
             ${(()=>{
               const loanRows = loanInterestBreakdownForDisplay(from, to, periodSummary.isCompanyWide);
-              if(loanRows.length===0) return `<tr><td>− Lãi vay ngân hàng / tháng (chỉ phần lãi)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.loanInterest)}</td></tr>`;
+              if(loanRows.length===0) return Math.abs(Number(fixedCostBreakdownForDisplay.loanInterest)||0)>0.5 ? `<tr><td>− Lãi vay ngân hàng / tháng (chỉ phần lãi)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.loanInterest)}</td></tr>` : '';
               return loanRows.map(r=>`<tr><td>− Lãi vay ngân hàng — ${escapeHtml(r.label)}</td><td class="num">${fmtVND(r.interest)}</td></tr>`).join('');
             })()}
-            <tr><td>− Bảo hiểm xe (trong kỳ)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.insurance)}</td></tr>
+            ${Math.abs(Number(fixedCostBreakdownForDisplay.insurance)||0)>0.5 ? `<tr><td>− Bảo hiểm xe (trong kỳ)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.insurance)}</td></tr>` : ''}
             ${(fixedCostBreakdownForDisplay.rentalTax||0)>0 ? `<tr><td>− Thuế trên tiền thuê xe (xe cá nhân)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.rentalTax)}</td></tr>` : ''}
-            <tr><td>− Đăng kiểm/Đăng ký/Phù hiệu vận tải (trong kỳ)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.registration)}</td></tr>
-            <tr><td>− Tip/thưởng tháng tài xế</td><td class="num">${fmtVND(periodSummary.driverBonusCost)}</td></tr>
-            <tr><td>− Chi phí tài xế báo tay (tiền tạm ứng đã chi)</td><td class="num">${fmtVND(periodSummary.driverExpenseReportCost)}</td></tr>
+            ${Math.abs(Number(fixedCostBreakdownForDisplay.registration)||0)>0.5 ? `<tr><td>− Đăng kiểm/Đăng ký/Phù hiệu vận tải (trong kỳ)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.registration)}</td></tr>` : ''}
+            ${Math.abs(Number(periodSummary.driverBonusCost)||0)>0.5 ? `<tr><td>− Tip/thưởng tháng tài xế</td><td class="num">${fmtVND(periodSummary.driverBonusCost)}</td></tr>` : ''}
+            ${Math.abs(Number(periodSummary.driverExpenseReportCost)||0)>0.5 ? `<tr><td>− Chi phí tài xế báo tay (tiền tạm ứng đã chi)</td><td class="num">${fmtVND(periodSummary.driverExpenseReportCost)}</td></tr>` : ''}
             ${Math.abs(periodSummary.saleGain||0)>0.5 ? `<tr><td>${periodSummary.saleGain>=0?'+ Lãi':'− Lỗ'} khi bán xe (giá bán − giá trị còn lại)</td><td class="num" style="color:${periodSummary.saleGain>=0?'var(--profit)':'var(--loss)'};">${periodSummary.saleGain>=0?'+':'−'}${fmtVND(Math.abs(periodSummary.saleGain))}</td></tr>` : ''}
-            <tr><td>+ Phần sửa chữa tài xế chịu (đã trừ vào lương)</td><td class="num" style="color:var(--profit);">+${fmtVND(periodSummary.repairDriverRecovery)}</td></tr>
-            <tr><td>+ VAT được khấu trừ (Lô Hoá Đơn Bù — không mất vĩnh viễn, trừ lại vào VAT phải nộp sau)</td><td class="num" style="color:var(--profit);">+${fmtVND(periodSummary.invoiceSupplementVatCredit)}</td></tr>
+            ${Math.abs(Number(periodSummary.repairDriverRecovery)||0)>0.5 ? `<tr><td>+ Phần sửa chữa tài xế chịu (đã trừ vào lương)</td><td class="num" style="color:var(--profit);">+${fmtVND(periodSummary.repairDriverRecovery)}</td></tr>` : ''}
+            ${Math.abs(Number(periodSummary.invoiceSupplementVatCredit)||0)>0.5 ? `<tr><td>+ VAT được khấu trừ (Lô Hoá Đơn Bù — không mất vĩnh viễn, trừ lại vào VAT phải nộp sau)</td><td class="num" style="color:var(--profit);">+${fmtVND(periodSummary.invoiceSupplementVatCredit)}</td></tr>` : ''}
             <tr class="grid-total-row"><td>= LỢI NHUẬN THỰC TẾ</td><td class="num" style="color:${finalNetProfit>=0?'var(--profit)':'var(--loss)'}">${finalNetProfit>=0?'+':''}${fmtVND(finalNetProfit)}</td></tr>
           </tbody>
         </table>
@@ -19311,7 +19338,7 @@ function renderPartnersOverview(){
       <div class="summary-row"><span>Tổng số đối tác đang theo dõi</span><span class="val" style="font-weight:700;">${partners.length} đối tác</span></div>
       <div class="summary-row total"><span>Tổng còn nợ (${owingCount} đối tác đang nợ)</span><span class="val" style="font-weight:800; color:${totalOwedAll>0?'var(--loss)':'var(--profit)'};">${fmtVND(totalOwedAll)}</span></div>
       ${(()=>{ const f = computeFreightPartnersReceivable(); return `
-      <div class="hint" style="margin:8px 0 0;">Đã thu ${fmtVND(f.collected)} — 🏦 vào TK Doanh Nghiệp ${fmtVND(f.collectedBank)} · 💵 vào Tiền Mặt ${fmtVND(f.collectedCash)} (đã nằm trong số dư TK Doanh Nghiệp / Tiền Mặt). Phần còn nợ được cộng vào bảng "Vốn Vận Hành", dòng 🤝 Đối tác chở cước.</div>`; })()}
+      <div class="hint" style="margin:8px 0 0;">Đã thu ${fmtVND(f.collected)} — 🏦 chuyển khoản ${fmtVND(f.collectedBank)} · 💵 tiền mặt ${fmtVND(f.collectedCash)}.</div>`; })()}
       <button class="btn btn-ghost btn-sm" id="partnersFullDetailBtn" style="width:auto; padding:8px 14px; margin-top:10px;">🔍 Chi Tiết (đầy đủ số chuyến, dòng tiền từng đối tác)</button>
     </div>
   `;
@@ -22987,7 +23014,7 @@ function renderCompanyDashboardPage(preserveScroll){
     <section class="group" style="margin-top:26px;">
       <div style="border:2px solid var(--accent); border-radius:14px; padding:12px 14px; background:var(--accent-soft);">
         <div style="font-weight:900; font-size:16px;">🚛 PHẦN RIÊNG TỪNG XE${noVehicleChosenForPerVehicleData ? '' : ` — ${escapeHtml(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||'')}`}</div>
-        <div class="hint" style="margin:4px 0 0;">Từ đây xuống là của đúng 1 xe đang chọn: luật đường, cầu đường, khoản vay, chi phí cố định, giấy tờ, bảo dưỡng. Mọi mục phía trên là của chung ${companyTag()}.</div>
+        <div class="hint" style="margin:4px 0 0;">Từ đây xuống là của đúng 1 xe đang chọn: luật đường, cầu đường, chi phí cố định, giấy tờ, bảo dưỡng. Mọi mục phía trên là của chung ${companyTag()}.</div>
         ${(state.vehicles||[]).length>1 ? `
         <div style="font-weight:800; margin:10px 0 6px;">Đang cài đặt cho xe nào? Bấm để đổi xe:</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
@@ -26581,6 +26608,7 @@ document.querySelectorAll('nav.tabbar button').forEach(btn=>{
     state.view='list'; state.draftShift=null;
     state.showCompanyDashboard = false;
     renderAll();
+    updateVehicleScopeBar();
     if(!lastAutoRestoreHit && prevTab!==state.currentTab) scrollMainToTop();
     // Icon nảy lên ngay lúc bấm — xoá class cũ trước (đề phòng bấm liên
     // tục cùng 1 tab) rồi thêm lại để trigger animation từ đầu mỗi lần.
