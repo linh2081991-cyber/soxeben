@@ -715,7 +715,7 @@
   body:not(.vbook-mode) .vbook-section{ display:none !important; }
   body.vbook-mode #app:has(#vbookBackBtn) > section:not(.vbook-section){ display:none !important; } /* chỉ khi đang đứng ở trang Công Ty — trang sửa giấy tờ/bảo dưỡng mở ra vẫn hiện đủ */
   body:not(.vbook-mode) #app .vbook-section{ display:none !important; }
-  .vbook-row{ cursor:pointer; }
+  .vbook-row{ cursor:pointer; } .vbook-row:active td{ background:var(--accent-soft); } table.vbook-table td{ vertical-align:middle; } table.vbook-table td:first-child{ min-width:120px; }
   .vbook-row:active{ background:var(--accent-soft); }
   .mode-switch{ display:flex; gap:8px; }
   .mode-switch .btn{ flex:1; }
@@ -822,7 +822,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.5 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.6 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -22255,22 +22255,31 @@ function openCharterCapitalEditor(){
 function vehicleBookSummaryHtml(){
   const ym = todayLocalDateStr().slice(0,7);
   const from = ym+'-01', to = ym+'-'+String(new Date(Number(ym.slice(0,4)), Number(ym.slice(5,7)), 0).getDate()).padStart(2,'0');
+  let total = 0;
   const rows = (state.vehicles||[]).map(v=>{
     const road = (state.allVehiclesRoadFee[v.id]||[]).find(x=>x.month===ym);
+    const roadAmt = road ? (Number(road.amount)||0) : 0;
     const toll = tollFeeForRangeVehicle(v.id, from, to);
     const st = state.allVehiclesSettings[v.id] || {};
     const fixed = (Number(st.monthlyInsurance)||0) + (Number(st.monthlyRegistrationFee)||0);
-    const money = n => n>0.5 ? `<b>${fmtVND(n)}</b>` : '—';
-    return `<div class="card vbook-row" data-vbook-vid="${v.id}" style="padding:12px 14px; margin-bottom:8px;">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
-        <div style="font-weight:800; font-size:15.5px;">🚛 ${escapeHtml(v.name||v.plate||'')}</div>
-        <div style="color:var(--accent); font-weight:800; font-size:13px; white-space:nowrap;">Mở sổ ›</div>
-      </div>
-      <div class="hint" style="margin:4px 0 0;">Luật đường ${money(road?Number(road.amount)||0:0)} · Cầu đường ${money(toll)} · BH + Đăng kiểm ${money(fixed)}</div>
-      <div class="hint vbook-warn" data-vbook-warn="${v.id}" style="margin:2px 0 0;"></div>
-    </div>`;
+    const sum = roadAmt + toll + fixed; total += sum;
+    const parts = [roadAmt>0.5?`Luật ${fmtVND(roadAmt)}`:'', toll>0.5?`Cầu ${fmtVND(toll)}`:'', fixed>0.5?`BH+ĐK ${fmtVND(fixed)}`:''].filter(Boolean).join(' · ');
+    return `<tr class="vbook-row" data-vbook-vid="${v.id}">
+      <td><div style="font-weight:800; color:var(--ink); font-size:14px;">🚛 ${escapeHtml(v.name||v.plate||'')}</div>
+        <div class="vbook-warn" data-vbook-warn="${v.id}" style="font-size:11.5px; font-weight:500; color:var(--ink-soft); margin-top:2px;">…</div></td>
+      <td><div style="font-weight:700; color:${sum>0.5?'var(--loss)':'var(--ink-soft)'};">${sum>0.5?fmtVND(sum):'Chưa nhập'}</div>
+        ${parts?`<div style="font-size:10.5px; color:var(--ink-soft); white-space:normal; margin-top:2px;">${parts}</div>`:''}</td>
+      <td style="width:18px; color:var(--accent); font-weight:800; font-size:18px;">›</td>
+    </tr>`;
   }).join('');
-  return rows;
+  return `<div class="card dash-wrap" style="padding:0;">
+      <table class="dash vbook-table">
+        <thead><tr><th>Xe</th><th>Chi phí riêng T${Number(ym.slice(5,7))}</th><th></th></tr></thead>
+        <tbody>${rows}
+          ${(state.vehicles||[]).length>1 ? `<tr><td style="font-weight:800; color:var(--ink);">Tổng</td><td style="font-weight:800; color:${total>0.5?'var(--loss)':'var(--ink-soft)'};">${total>0.5?fmtVND(total):'—'}</td><td></td></tr>` : ''}
+        </tbody>
+      </table>
+    </div>`;
 }
 /// Đếm giấy tờ còn ≤ 30 ngày và bảo dưỡng còn ≤ 1.000 km của TỪNG xe (đọc riêng từng xe, không đổi xe đang chọn).
 async function fillVehicleBookWarnings(){
@@ -22283,7 +22292,7 @@ async function fillVehicleBookWarnings(){
       const nDoc = docs.filter(d=>d.expiryDate && daysUntilLocal(d.expiryDate)<=30).length;
       const nMaint = maint.filter(m=>((Number(m.lastDoneOdo)||0)+(Number(m.intervalKm)||0)) - odo <= 1000).length;
       const el = document.querySelector(`[data-vbook-warn="${v.id}"]`);
-      if(el) el.innerHTML = (nDoc||nMaint) ? `<span style="color:var(--loss); font-weight:700;">⚠️ ${[nDoc?nDoc+' giấy tờ sắp hết hạn':'', nMaint?nMaint+' bảo dưỡng đến hạn':''].filter(Boolean).join(' · ')}</span>` : '✅ Giấy tờ, bảo dưỡng ổn';
+      if(el) el.innerHTML = (nDoc||nMaint) ? `<span style="color:var(--loss); font-weight:700;">⚠️ ${[nDoc?nDoc+' giấy tờ sắp hết hạn':'', nMaint?nMaint+' bảo dưỡng đến hạn':''].filter(Boolean).join(' · ')}</span>` : '<span style="color:var(--profit);">✓ Giấy tờ, bảo dưỡng ổn</span>';
     } catch(e){ console.error('fillVehicleBookWarnings', e); }
   }
 }
@@ -22480,7 +22489,7 @@ function renderCompanyDashboardPage(preserveScroll){
             <thead><tr><th>Khoản mục</th><th class="num">Số tiền</th></tr></thead>
             <tbody>
               <tr><td>Doanh Thu</td><td class="num" style="color:var(--profit);">+${fmtVND(pnl.totalRevenue)}</td></tr>
-              <tr><td>Tổng Chi Phí (vận hành + cố định + khấu hao + lãi vay)</td><td class="num" style="color:var(--loss);">−${fmtVND(totalCost)}</td></tr>
+              <tr><td>Tổng Chi Phí (vận hành + cố định)</td><td class="num" style="color:var(--loss);">−${fmtVND(totalCost)}</td></tr>
               <tr class="grid-total-row"><td style="text-align:left;">= LỢI NHUẬN THỰC TẾ</td><td class="num" style="color:${pnl.netProfit>=0?'var(--profit)':'var(--loss)'}">${pnl.netProfit>=0?'+':''}${fmtVND(pnl.netProfit)}</td></tr>
             </tbody>
           </table>
@@ -23080,9 +23089,11 @@ function renderCompanyDashboardPage(preserveScroll){
     </section>
 
     <section class="group">
-      <h3>🚛 Sổ Từng Xe</h3>
-      <div class="hint" style="margin:-4px 0 8px;">Chi phí riêng tháng ${monthLabelVN(todayLocalDateStr().slice(0,7))} và cảnh báo của từng xe. Bấm vào 1 xe để xem/sửa luật đường, cầu đường, chi phí cố định, giấy tờ, bảo dưỡng.</div>
-      ${vehicleBookSummaryHtml()}
+      <div class="card" style="margin-top:0;">
+        <div style="font-weight:800; font-size:13px; margin-bottom:4px;">🚛 Sổ Từng Xe</div>
+        <div class="hint" style="margin:0 0 10px;">Chi phí riêng tháng này (luật đường, cầu đường, bảo hiểm + đăng kiểm) và cảnh báo của từng xe. Bấm vào xe để mở sổ.</div>
+        ${vehicleBookSummaryHtml()}
+      </div>
     </section>
 
     <section class="group vbook-section">
