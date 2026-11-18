@@ -710,6 +710,13 @@
   body.mode-basic .ent-only{ display:none !important; }
   /* Bản sạch 1.3 — các khối Ông Chủ yêu cầu bỏ khỏi giao diện (ẩn ở mọi chế độ, công thức giữ nguyên). */
   .sx-removed{ display:none !important; }
+  /* Bản 2.4 — Sổ Từng Xe: trang Công Ty có 2 chế độ. Thường: ẩn các mục riêng xe.
+     Mở sổ 1 xe: chỉ hiện các mục riêng xe (cùng 1 hàm vẽ nên mọi nút Lưu/Sửa giữ nguyên). */
+  body:not(.vbook-mode) .vbook-section{ display:none !important; }
+  body.vbook-mode #app:has(#vbookBackBtn) > section:not(.vbook-section){ display:none !important; } /* chỉ khi đang đứng ở trang Công Ty — trang sửa giấy tờ/bảo dưỡng mở ra vẫn hiện đủ */
+  body:not(.vbook-mode) #app .vbook-section{ display:none !important; }
+  .vbook-row{ cursor:pointer; }
+  .vbook-row:active{ background:var(--accent-soft); }
   .mode-switch{ display:flex; gap:8px; }
   .mode-switch .btn{ flex:1; }
 </style>
@@ -815,7 +822,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.3 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.4 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -967,6 +974,15 @@ function defaultSettingsShape(){
 /// trống (chưa nhập gì) thì bankLoans bắt đầu rỗng — không tạo khoản vay
 /// rác. Không xoá field bankLoan cũ (giữ lại để rollback an toàn nếu cần,
 /// nhưng KHÔNG hàm nào khác còn đọc từ nó sau bản này).
+/// Bản 2.4 (Ông Chủ duyệt 18/11/2026): tạm KHÔNG dùng khấu hao xe và khoản vay ngân hàng.
+/// Tắt tại nguồn đọc dữ liệu → lãi lỗ, hoà vốn, dự đoán, thuế ước tính, thẩm định… cùng ngừng tính.
+/// Dữ liệu cũ KHÔNG bị xoá (vẫn nằm trong settings, lưu lại bình thường); bật lại = đổi thành true.
+const FEATURE_DEPRECIATION_LOANS = false;
+function activeLoansOf(st){
+  if(!FEATURE_DEPRECIATION_LOANS || !st) return [];
+  return Array.isArray(st.bankLoans) ? st.bankLoans : (st.bankLoan && Number(st.bankLoan.principal)>0 ? [st.bankLoan] : []);
+}
+function depMonthlyOf(st){ return (FEATURE_DEPRECIATION_LOANS && st) ? (Number(st.monthlyVehicleDepreciation)||0) : 0; }
 function migrateBankLoanToBankLoans(){
   if(!state.settings) return;
   if(Array.isArray(state.settings.bankLoans)) return; // đã di trú rồi
@@ -1599,7 +1615,7 @@ function openMissingPickupDateDetail(){
 /// "Đã Trả Tiền Ngân Hàng" biết ghi nhận cho đúng khoản nào.
 function computeLoanDueWarnings(){
   migrateBankLoanToBankLoans();
-  const loans = (state.settings && state.settings.bankLoans) || [];
+  const loans = activeLoansOf(state.settings);
   const out = [];
   loans.forEach(loan=>{
     const amort = computeBankLoanAmortization(loan, new Date());
@@ -2991,7 +3007,7 @@ function fleetLoanRows(){
   Object.entries(state.allVehiclesSettings).forEach(([vid, s0])=>{
     const s = settingsOfVehicle(vid) || s0;
     const v = (state.vehicles||[]).find(x=>x.id===vid);
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{
       const paidSet = new Set(Array.isArray(loan.paidMonths) ? loan.paidMonths : []);
       const sch = computeFullLoanSchedule(loan);
@@ -3021,7 +3037,7 @@ function projectPersonalLoanSplit(asOfDate){
   let original = 0, paid = 0;
   Object.entries(state.allVehiclesSettings).forEach(([vid,s0])=>{
     const s = settingsOfVehicle(vid) || s0;
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{
       if((loan.ownerType||'personal')==='company' || !loanIsForProject(loan)) return;
       if(loan.disbursementDate && loan.disbursementDate>d) return;
@@ -3041,7 +3057,7 @@ function vehicleSetupChecklist(vid){
   const s = settingsOfVehicle(vid) || {};
   const owner = vehicleOwnershipOf(s);
   const entries = vehicleInvestEntries(vid);
-  const loans = Array.isArray(s.bankLoans) ? s.bankLoans : [];
+  const loans = activeLoansOf(s);
   const items = [];
   items.push({ ok: !!s.ownershipType, text: `Đã chọn xe đứng tên ai (${owner==='company'?'🏢 Công ty':'👤 Cá nhân'})` });
   items.push({ ok: entries.length>0, text: entries.length ? `Đã gán ${entries.length} lần đầu tư cho xe` : 'Chưa gán lần đầu tư nào cho xe' });
@@ -3649,10 +3665,10 @@ function vehicleAccrualFixedBreakdown(vid, s, from, to){
   if(!s || !vStart) return zero;
   const effectiveFrom = vStart>from ? vStart : from;
   if(effectiveFrom>to) return zero;
-  const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+  const loans = activeLoansOf(s);
   const loanInterest = loans.reduce((sum2,loan)=>sum2 + loanInterestAccruedInRange(loan, effectiveFrom, to), 0); // #377 — phát sinh theo ngày
   const toCap = capToSaleDate(s, to); // #320 — dừng ở ngày bán xe
-  const depreciation = effectiveFrom<=toCap ? proratedMonthlyCost(()=>Number(s.monthlyVehicleDepreciation)||0, effectiveFrom, toCap) : 0;
+  const depreciation = effectiveFrom<=toCap ? proratedMonthlyCost(()=>depMonthlyOf(s), effectiveFrom, toCap) : 0;
   const insurance = effectiveFrom<=toCap ? proratedMonthlyCost(()=>Number(s.monthlyInsurance)||0, effectiveFrom, toCap) : 0;
   const registration = effectiveFrom<=toCap ? proratedMonthlyCost(()=>Number(s.monthlyRegistrationFee)||0, effectiveFrom, toCap) : 0;
   return { depreciation, loanInterest, insurance, registration, rentalTax, total: depreciation+loanInterest+insurance+registration+rentalTax };
@@ -3688,7 +3704,7 @@ function companyWideWagePayable(){
 function loanBalancesSplit(){
   let companyRemaining = 0, personalRemaining = 0, personalPrincipalPaid = 0;
   Object.values(state.allVehiclesSettings).forEach(s=>{
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{
       const originalPrincipal = Number(loan.principal)||0;
       const paidSet = new Set(Array.isArray(loan.paidMonths) ? loan.paidMonths : []);
@@ -3932,7 +3948,7 @@ function taxAdjustmentForRange(from, to, vid){
   let nonDeductible = 0, rentDeductible = 0;
   Object.keys(state.allVehiclesSettings).filter(v=>!vid || v===vid).forEach(v=>{
     const s = settingsOfVehicle(v); if(!s) return;
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     const vStart = vehicleOperatingStartDate(v);
     const effFrom = vStart && vStart>from ? vStart : from;
     const personalLoanInterest = vStart ? loans.filter(l=>(l.ownerType||'personal')!=='company').reduce((sum2,loan)=>sum2 + loanInterestAccruedInRange(loan, effFrom, to), 0) : 0; // #377
@@ -4200,7 +4216,7 @@ function renderVehicleManagementPage(selectedVid){
   const base = vid ? vehicleDepreciableBase(vid) : 0;
   const entries = investmentEntriesAll().filter(e=>e.vehicleId===vid).sort((a,b)=>a.date.localeCompare(b.date));
   const unassigned = investmentEntriesAll().filter(e=>!e.vehicleId || !state.allVehiclesSettings[e.vehicleId]);
-  const loans = Array.isArray(s.bankLoans) ? s.bankLoans : [];
+  const loans = activeLoansOf(s);
   const saleRes = vid ? vehicleSaleResult(vid) : null;
   const entryRow = e=>{ const p = investEntryParts(e); return `<tr>
       <td style="white-space:nowrap;">${formatDateVN(e.date)}</td>
@@ -4540,7 +4556,7 @@ function companyWideCashFlowFixedMonthly(from, to, fixedCostFromForTouch, method
   let sum = 0;
   const touchFrom = fixedCostFromForTouch || from;
   Object.values(state.allVehiclesSettings).forEach(s=>{
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{ sum += bankLoanRealCostForRange(loan, from, to, methodFilter); });
     const insuranceAndRegistration = (Number(s.monthlyInsurance)||0) + (Number(s.monthlyRegistrationFee)||0);
     sum += fullMonthlyCostIfTouched(ym=>(vehicleActiveInMonth(s, ym) && (!methodFilter || insuranceMethodForMonth(s, ym)===methodFilter)) ? insuranceAndRegistration : 0, touchFrom, to);
@@ -4557,7 +4573,7 @@ function companyWideCashFlowFixedMonthly(from, to, fixedCostFromForTouch, method
 function companyWideLoanPaymentCashOut(from, to){
   let sum = 0;
   Object.values(state.allVehiclesSettings).forEach(s=>{
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{ sum += bankLoanRealCostForRange(loan, from, to); });
   });
   return sum;
@@ -4626,7 +4642,7 @@ function companyWideAccrualFixedMonthlyBreakdown(from, to){
     if(!vehicleStartDate) return; // Chưa có ca nào — xe chưa hoạt động, đóng góp 0đ.
     const effectiveFrom = vehicleStartDate>from ? vehicleStartDate : from;
     if(effectiveFrom>to) return; // Xe bắt đầu hoạt động SAU khoảng đang xem — chưa góp gì trong kỳ này.
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     // SỬA 2026-09-14 (Ông Chủ chỉ ra — "lãi vay cũng là chi phí đúng của
     // dự án, đang tính thiếu"): BẮT ĐƯỢC LỖI THẬT, CÙNG LOẠI với lỗi Gốc
     // vừa sửa — trước đây lấy 1 MỨC LÃI CỐ ĐỊNH của ĐÚNG kỳ hôm nay
@@ -4641,7 +4657,7 @@ function companyWideAccrualFixedMonthlyBreakdown(from, to){
     // mức lãi cố định dàn đều nữa.
     const actualLoanInterestInRange = loans.reduce((sum2,loan)=>sum2 + loanInterestAccruedInRange(loan, effectiveFrom, to), 0); // #377 — phát sinh theo ngày
     const toCap = capToSaleDate(s, to); // #320 — khấu hao/bảo hiểm/đăng kiểm dừng ở ngày bán xe
-    if(effectiveFrom<=toCap) depreciation += proratedMonthlyCost(()=>Number(s.monthlyVehicleDepreciation)||0, effectiveFrom, toCap);
+    if(effectiveFrom<=toCap) depreciation += proratedMonthlyCost(()=>depMonthlyOf(s), effectiveFrom, toCap);
     loanInterest += actualLoanInterestInRange;
     if(effectiveFrom<=toCap) insurance += proratedMonthlyCost(()=>Number(s.monthlyInsurance)||0, effectiveFrom, toCap);
     if(effectiveFrom<=toCap) registration += proratedMonthlyCost(()=>Number(s.monthlyRegistrationFee)||0, effectiveFrom, toCap);
@@ -4702,13 +4718,13 @@ function loanInterestBreakdownForDisplay(from, to, isCompanyWide){
       if(!vehicleStartDate) return;
       const effectiveFrom = vehicleStartDate>from ? vehicleStartDate : from;
       if(effectiveFrom>to) return;
-      const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+      const loans = activeLoansOf(s);
       loans.forEach(loan=>addLoanRow(vehicleNameById(vid), loan, effectiveFrom));
     });
   } else {
     // SỬA 2026-09-28 — mục 7b: tính từ ca đầu tiên của xe, khớp số đã trừ trong lợi nhuận.
     const vStart = vehicleOperatingStartDate(activeVehicleIdForEditing());
-    if(vStart){ const effFrom = vStart>from ? vStart : from; if(effFrom<=to) (state.settings.bankLoans||[]).forEach(loan=>addLoanRow('', loan, effFrom)); }
+    if(vStart){ const effFrom = vStart>from ? vStart : from; if(effFrom<=to) activeLoansOf(state.settings).forEach(loan=>addLoanRow('', loan, effFrom)); }
   }
   return rows;
 }
@@ -4720,7 +4736,7 @@ function loanInterestBreakdownForDisplay(from, to, isCompanyWide){
 // Định, Tư Vấn Thuê Tài Xế) — y hệt công thức recomputeBankLoanMonthlyPayment().
 function liveMonthlyLoanInterest(s){
   if(!s) return 0;
-  const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+  const loans = activeLoansOf(s);
   return Math.round(loans.reduce((sum,loan)=>sum+(Number(computeBankLoanAmortization(loan, new Date()).monthlyInterestCurrent)||0), 0));
 }
 // MỚI 2026-09-27 (Ông Chủ yêu cầu — "Cầu Nối Dòng Tiền: lãi ròng hơn 126tr
@@ -4746,7 +4762,7 @@ function computeCashBridge(eq, workingCapitalTotal, depreciationSoFar){
   // của xe, hoặc tick trả trước hạn) được trừ riêng 1 dòng.
   let principalBank = 0, principalCash = 0, interestBank = 0, interestCash = 0, hasCompanyLoan = false;
   Object.values(state.allVehiclesSettings).forEach(s=>{
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{
       if((loan.ownerType||'personal')==='company') hasCompanyLoan = true;
       const paidSet = new Set(Array.isArray(loan.paidMonths) ? loan.paidMonths : []);
@@ -4780,7 +4796,7 @@ function computeCashBridge(eq, workingCapitalTotal, depreciationSoFar){
   const companyFundedInvest = companyFundedInvestmentInRange('0000-01-01', todayStr);
   let companyLoanToAccount = 0;
   Object.values(state.allVehiclesSettings).forEach(s2=>{
-    const loans2 = Array.isArray(s2.bankLoans) ? s2.bankLoans : (s2.bankLoan && Number(s2.bankLoan.principal)>0 ? [s2.bankLoan] : []);
+    const loans2 = activeLoansOf(s2);
     loans2.forEach(l=>{ if(loanDisbursedToCompanyAccount(l) && l.disbursementDate && l.disbursementDate<=todayStr) companyLoanToAccount += Number(l.principal)||0; });
   });
   const soldBookValue = Object.keys(state.allVehiclesSettings).reduce((a,vid)=>{ const r = vehicleSaleResult(vid); return (r && r.date<=todayStr) ? a + r.bookValue : a; }, 0);
@@ -8071,7 +8087,7 @@ function renderCompanyVatDetailPage(onBack){
 /// Tiền cước GỘP của 1 công trình chở cước = khối lượng × đơn giá × số chuyến.
 function siteFreightGross(s){ return (Number(s.volumePerTrip)||0) * (Number(s.materialUnitPrice)||0) * (Number(s.trips)||0); }
 /// Chi phí cố định/tháng của 1 xe = khấu hao + lãi vay (kỳ hiện tại) + bảo hiểm + đăng kiểm.
-function vehicleFixedMonthlyBase(st){ return (Number(st.monthlyVehicleDepreciation)||0) + liveMonthlyLoanInterest(st) + (Number(st.monthlyInsurance)||0) + (Number(st.monthlyRegistrationFee)||0); }
+function vehicleFixedMonthlyBase(st){ return depMonthlyOf(st) + liveMonthlyLoanInterest(st) + (Number(st.monthlyInsurance)||0) + (Number(st.monthlyRegistrationFee)||0); }
 /// Tổng tiền khách/đối tác đã trả trong [from,to] (mọi nguồn).
 function sitePaymentsTotalInRange(from, to){ return state.sitePayments.filter(p=>p.date>=from && p.date<=to).reduce((s,p)=>s+(Number(p.amount)||0),0); }
 /// Tổng tiền đã trả nhà cung cấp trong [from,to] (mọi nguồn).
@@ -9756,7 +9772,10 @@ function renderHeader(){
   const sub=document.getElementById('pageSub');
   const action=document.getElementById('headerAction');
   action.innerHTML='';
-  if(state.showCompanyDashboard){ title.textContent='Công Ty'; sub.textContent=companyFull(); return; } // Bản 2.3
+  if(state.showCompanyDashboard){ // Bản 2.3 / 2.4
+    if(state.vehicleBookOpen && activeVehicleIdForEditing()){ title.textContent='Sổ Xe — '+(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||''); sub.textContent='Chi phí riêng, giấy tờ, bảo dưỡng'; }
+    else { title.textContent='Công Ty'; sub.textContent=companyFull(); }
+    return; }
   if(state.currentTab==='shifts'){
     if(state.view==='form'){
       title.textContent = state.draftShift.isNew ? 'Thêm Ca Mới' : 'Sửa Ca';
@@ -10088,6 +10107,7 @@ function renderChooseVehiclePrompt(){
   document.getElementById('vehicleMapHubBtn').addEventListener('click', async ()=>{
     saveMainScroll();
     state.showCompanyDashboard = true;
+    state.vehicleBookOpen = false; // Bản 2.4 — vào Công Ty luôn bắt đầu ở màn tổng
     // SỬA 2026-09-23 (Ông Chủ báo — "vừa nhập 1 CP thật cho xe mới nhưng
     // Kế Toán Nội Bộ chưa xử lý chuẩn"): rà toàn bộ các hàm cộng dồn công
     // ty (sửa chữa, luật đường, bảo hiểm/đăng kiểm, vay...) đều ĐÃ đúng —
@@ -13273,7 +13293,6 @@ function buildCompanyStrategyData(from, to){
     if(s.siteType==='commercial'){ tmDT += siteRevenue(s); tmGiaVon += siteMaterialCost(s); tmChuyen += siteTripCount(s); }
     else { cuocDT += siteRevenue(s); cuocChuyen += siteTripCount(s); vatCuoc += siteFreightOutputVat(s); }
   }));
-  const bank = safe(()=>computeBankBalanceReconciliation(), null), cash = safe(()=>computeCashBalanceReconciliation(), null);
   const debt = safe(()=>computeAllPartnersDebtSummary(), {});
   const LG = safe(()=>companyVatLedger(), { rows:[], truckTotal:0, truckUsed:0, truckRemaining:0, inputCarryRemaining:0, creditRemaining:0, dueTotal:0, paidTotal:0, owedNow:0 });
   const partners = safe(()=>computePartnersOverview(), []).filter(p=>p.totalOwed>0.5)
@@ -13291,7 +13310,7 @@ function buildCompanyStrategyData(from, to){
     coCauDoanhThu: { choCuoc: { doanhThu: R(cuocDT), soChuyen: cuocChuyen, vatThuHoNhaNuoc: R(vatCuoc) }, thuongMaiVatLieu: { doanhThu: R(tmDT), giaVonHang: R(tmGiaVon), soChuyen: tmChuyen } },
     tungXe,
     tienVaCongNoHienTai: {
-      tcbBank: bank ? R(bank.computedBalance) : null, tienMat: cash ? R(cash.computedBalance) : null,
+      
       khachThuongMaiConNo: R(debt.totalCustomerOwed), doiTacChoCuocConNo: R(debt.totalFreightOwed),
       nhaCungCap: (debt.totalSupplierOwed||0)>=0 ? { congTyConNoMo: R(debt.totalSupplierOwed) } : { daUngDuChoMo: R(-debt.totalSupplierOwed) },
       luongConNoTaiXe: R(safe(()=>companyWideWagePayable(), 0)),
@@ -13322,6 +13341,7 @@ function addFinancialRatios(d){
   const sumPart = name => veh.reduce((a,x)=>a+(Number((x.chiTietChiPhiBienDoi||{})[name])||0),0);
   const fuel = sumPart('Dầu tiêu hao'), goods = sumPart('Giá vốn hàng mua từ mỏ'), tripWage = sumPart('Lương chuyến');
   const km = veh.reduce((a,x)=>a+(Number(x.tongKm)||0),0);
+  const hasCash = (t.tcbBank!=null || t.tienMat!=null);
   const cash = (Number(t.tcbBank)||0) + (Number(t.tienMat)||0);
   const recv = (Number(t.khachThuongMaiConNo)||0) + (Number(t.doiTacChoCuocConNo)||0);
   const fixedPerMonth = fixedAll/days*30;
@@ -13335,7 +13355,7 @@ function addFinancialRatios(d){
     bienAnToanTheoChuyenPhanTram: (k.soChuyenHoaVonCaCongTy && k.tongChuyen) ? pct(k.tongChuyen - k.soChuyenHoaVonCaCongTy, k.tongChuyen) : null,
     doanhThuMoiKm: km>0 ? R(k.doanhThu/km) : null, chiPhiDauMoiKm: km>0 ? R(fuel/km) : null, tongKm: R(km),
     donBayHoatDong_DOL: (k.loiNhuanThucTe>0) ? Math.round((k.laiGop||0)/k.loiNhuanThucTe*100)/100 : null,
-    tienHienCo_TCBvaTienMat: R(cash), soThangDuTienTraChiPhiCoDinh: fixedPerMonth>0 ? Math.round(cash/fixedPerMonth*10)/10 : null,
+    tienHienCo_TCBvaTienMat: hasCash ? R(cash) : null, soThangDuTienTraChiPhiCoDinh: (hasCash && fixedPerMonth>0) ? Math.round(cash/fixedPerMonth*10)/10 : null,
     phaiThuKhachVaDoiTac: R(recv), soNgayThuTienBinhQuan_uocTinh: (k.doanhThu>0) ? Math.round(recv/(k.doanhThu/days)) : null
   };
   veh.forEach(x=>{
@@ -13360,7 +13380,7 @@ function renderFinancialRatiosHtml(d){
     ['Doanh thu mỗi km / tiền dầu mỗi km', `${m(c.doanhThuMoiKm)} / ${m(c.chiPhiDauMoiKm)}`], ['Đòn bẩy hoạt động (lãi gộp ÷ lợi nhuận)', x(c.donBayHoatDong_DOL)],
     ['Số tháng tiền hiện có đủ trả chi phí cố định', c.soThangDuTienTraChiPhiCoDinh===null?'—':String(c.soThangDuTienTraChiPhiCoDinh).replace('.',',')+' tháng'],
     ['Số ngày thu tiền bình quân (ước tính)', c.soNgayThuTienBinhQuan_uocTinh===null?'—':c.soNgayThuTienBinhQuan_uocTinh+' ngày']
-  ];
+  ].filter(r=>!(r[0].startsWith('Số tháng tiền hiện có') && c.soThangDuTienTraChiPhiCoDinh===null));
   return `
       <div class="grid-table-wrap" style="margin-top:8px;">
         <table class="grid-table">
@@ -13390,7 +13410,7 @@ Chỉ trả về DUY NHẤT một object JSON, không markdown:
   "incomeStatement": "<đọc kết quả kinh doanh: doanh thu, cơ cấu cước/thương mại, lãi gộp, biên lãi, lợi nhuận, so sánh các xe>",
   "costStructure": "<cơ cấu chi phí: biến đổi vs cố định, khoản lớn nhất, chi phí/km, đòn bẩy hoạt động, khoản bất thường>",
   "breakEven": "<hoà vốn công ty và từng xe: cần/đã chạy/thiếu, biên an toàn, tốc độ chuyến/ngày cần đạt>",
-  "cashAndReceivables": "<thanh khoản: tiền TK Doanh Nghiệp/tiền mặt, số tháng đủ trả chi phí cố định, công nợ phải thu và số ngày thu tiền, phải trả, lương còn nợ, khả năng trả nợ vay>",
+  "cashAndReceivables": "<thanh khoản: công nợ phải thu và số ngày thu tiền, phải trả, lương còn nợ, khả năng trả nợ vay>",
   "taxVat": "<VAT: còn nợ thuế, còn được khấu trừ, ảnh hưởng tới dòng tiền>",
   "ratioAnalysis": [ { "metric": "<tên chỉ số>", "value": "<giá trị từ dữ liệu>", "assessment": "<tốt / trung bình / yếu và vì sao, so với mức hợp lý của xe ben>" } ],
   "redFlags": [ { "issue": "<vấn đề>", "evidence": "<số liệu>", "impact": "<hệ quả nếu không xử lý>" } ]
@@ -14545,7 +14565,7 @@ function renderStrategyNumbersHtml(d){
         <table class="grid-table">
           <thead><tr><th style="text-align:left;">Tiền, công nợ, thuế (tới hôm nay)</th><th class="num">Số tiền</th></tr></thead>
           <tbody>
-            <tr><td>🏦 TK Doanh Nghiệp / 💵 Tiền mặt</td><td class="num">${m(t.tcbBank)} / ${m(t.tienMat)}</td></tr>
+            ${(t.tcbBank!=null||t.tienMat!=null)?`<tr><td>🏦 TK Doanh Nghiệp / 💵 Tiền mặt</td><td class="num">${m(t.tcbBank)} / ${m(t.tienMat)}</td></tr>`:''}
             <tr><td>Khách thương mại nợ / Đối tác cước nợ</td><td class="num">${m(t.khachThuongMaiConNo)} / ${m(t.doiTacChoCuocConNo)}</td></tr>
             <tr><td>Lương còn nợ tài xế</td><td class="num">${m(t.luongConNoTaiXe)}</td></tr>
             <tr><td>VAT: phải nộp luỹ kế / đã nộp / còn nợ</td><td class="num">${m(v.phaiNopLuyKe)} / ${m(v.daNopNhaNuoc)} / ${m(v.conNoThueLuyKe)}</td></tr>
@@ -14765,7 +14785,7 @@ function historicalMonthlyFixedCostReal(){
   // khấu hao. Chi phí sửa chữa phát sinh chỉ đúng cho THÁNG ĐÃ QUA ghi
   // trong sổ, không phải con số nên dùng để ước tính cho 1 công trình sẽ
   // chạy lặp lại hàng tháng trong tương lai — nên KHÔNG dùng nó ở đây nữa.
-  const depreciationMonthly = Number(state.settings.monthlyVehicleDepreciation)||0;
+  const depreciationMonthly = depMonthlyOf(state.settings);
   return { baseSalaryMonthly, housingMonthly, depreciationMonthly, activeDriverCount: activeDrivers.length };
 }
 /// Core simulation for ONE prospective project. Everything downstream
@@ -16453,7 +16473,7 @@ function computeMonthlyBreakEvenProjection(marginWindowDays){
     [`Lương cứng lái chính${assignedDriverNames.length?` (${assignedDriverNames.join(', ')})`:''}`, monthlySalary],
     [`Tiền ăn (${workDays} ngày công chuẩn)`, monthlyFood],
     ['Luật đường tháng này', monthlyRoadFee], ['Cầu đường tháng này', monthlyTollFee],
-    ['Khấu hao', Number(s.monthlyVehicleDepreciation)||0], ['Lãi vay', liveMonthlyLoanInterest(s)],
+    ...(FEATURE_DEPRECIATION_LOANS ? [['Khấu hao', depMonthlyOf(s)], ['Lãi vay', liveMonthlyLoanInterest(s)]] : []),
     ['Bảo hiểm', Number(s.monthlyInsurance)||0], ['Đăng kiểm / đăng ký / phù hiệu', Number(s.monthlyRegistrationFee)||0]
   ];
   const fixedCost = monthlySalary + monthlyFood + monthlyRoadFee + monthlyTollFee + otherFixedMonthly;
@@ -17111,7 +17131,7 @@ function computeBankBalanceReconciliation(){
   // Ông Chủ ghi tay qua Góp Vốn (đúng thời điểm/số tiền THẬT đã chuyển
   // vào, có thể khác hẳn ngày/số tiền giải ngân gốc).
   const loanDisbursedBank = Object.values(state.allVehiclesSettings).reduce((sum,s)=>{
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return sum + loans.filter(loan=>loanDisbursedToCompanyAccount(loan) && loan.disbursementDate && loan.disbursementDate>=from && loan.disbursementDate<=today)
       .reduce((s2,loan)=>s2+(Number(loan.principal)||0), 0);
   }, 0);
@@ -17690,7 +17710,7 @@ function computePeriodSummary(from, to){
   // SỬA 2026-09-28 — mục 7b: xe đang xem cũng tính từ CA ĐẦU TIÊN của xe.
   const otherFixedMonthly = isCompanyWide ? companyWideAccrualFixedMonthly(from, to)
     : vehicleAccrualFixedBreakdown(activeVehicleIdForEditing(), state.settings, from, to).total;
-  const otherFixedMonthlyForCashFlow = (state.settings.bankLoans||[]).reduce((sum,loan)=>sum+bankLoanRealCostForRange(loan, from, to), 0)
+  const otherFixedMonthlyForCashFlow = activeLoansOf(state.settings).reduce((sum,loan)=>sum+bankLoanRealCostForRange(loan, from, to), 0)
     + fullMonthlyCostIfTouched(()=>insuranceAndRegistrationMonthly, from, to);
   // SỬA 2026-09-14 (Ông Chủ đối chiếu — "chi phí thật cuối cùng phải trừ
   // đúng VAT được khấu trừ lại, VAT không mất vĩnh viễn"): đồng bộ với
@@ -18146,7 +18166,7 @@ ${Math.abs(Number(gTotal.materialCost)||0)>0.5 ? `<tr><td>− Giá vốn hàng m
             <tr class="grid-total-row"><td>= LÃI GỘP MUA-BÁN</td><td class="num" style="color:${gTotal.takeHomeTotal>=0?'var(--profit)':'var(--loss)'}">${gTotal.takeHomeTotal>=0?'+':''}${fmtVND(gTotal.takeHomeTotal)}</td></tr>
             <tr><td>− Chi phí vận hành (dầu, lương chuyến/cứng, ăn, phát sinh, sửa chữa/khấu hao, luật đường, nhà, điện nước, cầu đường)</td><td class="num">${fmtVND(gTotal.operatingCashCost + repairTotal + roadFee + houseRent + utilities + tollFee)}</td></tr>
             <tr class="grid-total-row"><td>= Lãi sau chi phí vận hành</td><td class="num" style="color:${(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)>=0?'var(--profit)':'var(--loss)'}">${fmtVND(gTotal.grossProfit-repairTotal-roadFee-houseRent-utilities-tollFee)}</td></tr>
-            <tr><td>− Khấu hao xe (trong kỳ, tính từ ca đầu tiên của xe)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.depreciation)}</td></tr>
+            ${Math.abs(Number(fixedCostBreakdownForDisplay.depreciation)||0)>0.5 ? `<tr><td>− Khấu hao xe (trong kỳ, tính từ ca đầu tiên của xe)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.depreciation)}</td></tr>` : ''}
             ${(()=>{
               const loanRows = loanInterestBreakdownForDisplay(from, to, periodSummary.isCompanyWide);
               if(loanRows.length===0) return Math.abs(Number(fixedCostBreakdownForDisplay.loanInterest)||0)>0.5 ? `<tr><td>− Lãi vay ngân hàng / tháng (chỉ phần lãi)</td><td class="num">${fmtVND(fixedCostBreakdownForDisplay.loanInterest)}</td></tr>` : '';
@@ -19725,7 +19745,7 @@ function renderDocumentList(){
   const wrap = document.getElementById('documentListWrap');
   if(!wrap) return;
   if(state.documents.length===0){
-    wrap.innerHTML = '<div class="hint" style="margin:0 0 10px;">Chưa có giấy tờ nào được nhập — bấm "+ Thêm Giấy Tờ" ở Cài Đặt để bắt đầu.</div>';
+    wrap.innerHTML = '<div class="hint" style="margin:0 0 10px;">Chưa có giấy tờ nào được nhập — bấm "+ Thêm Giấy Tờ" ở dưới.</div>';
     return;
   }
   const sorted = [...state.documents].sort((a,b)=>a.expiryDate.localeCompare(b.expiryDate));
@@ -21237,7 +21257,7 @@ function openFixedCostsEditor(){
   const fceMonths = fceStart ? monthsBetween(fceStart, todayLocalDateStr()).slice().reverse() : [];
   openModal(`
     <h3>💰 Sửa Chi Phí Cố Định Hàng Tháng</h3>
-    <div class="field">
+    <div class="${FEATURE_DEPRECIATION_LOANS?'':'sx-removed '}field">
       <label>Khấu hao xe dự kiến / tháng</label>
       <input type="text" inputmode="decimal" id="fce_dep">
     </div>
@@ -21347,7 +21367,7 @@ function computeDepreciationMonthlyHistory(){
       const rangeEnd = vEnd < monthEnd ? vEnd : monthEnd;
       if(rangeStart>rangeEnd) return;
       const overlapDays = daysBetweenDates(new Date(rangeStart+'T00:00:00'), new Date(rangeEnd+'T00:00:00')) + 1;
-      amount += (Number(s.monthlyVehicleDepreciation)||0) * (overlapDays/dim);
+      amount += depMonthlyOf(s) * (overlapDays/dim);
     });
     cumulative += amount;
     return { month: ym, amount, cumulative, isPartial: ym===currentMonthStr || idx===0 };
@@ -21361,7 +21381,7 @@ function renderDepreciationDetailPage(){
   // SỬA 2026-09-14 LẦN 2: monthlyRate hiển thị giờ CỘNG DỒN qua TẤT CẢ
   // xe (y hệt bên trong computeDepreciationMonthlyHistory()) — không chỉ
   // đọc đúng 1 xe đang active nữa.
-  const monthlyRate = Object.values(state.allVehiclesSettings).reduce((s,v)=>s+(Number(v.monthlyVehicleDepreciation)||0), 0);
+  const monthlyRate = Object.values(state.allVehiclesSettings).reduce((s,v)=>s+depMonthlyOf(v), 0);
   const totalSoFar = rows.length ? rows[rows.length-1].cumulative : 0;
   app.innerHTML = `
     <section class="group">
@@ -21445,10 +21465,10 @@ function computeBusinessReport(from, to){
 
   // ---- Nhận định / Gợi ý (ngưỡng số học đơn giản, không AI) ----
   const notes = [];
-  if(allTimeCashFlow.total>=0) notes.push({ ok:true, text:`✅ Cộng dồn CẢ QUÁ TRÌNH đang LÃI TIỀN MẶT ${fmtVND(allTimeCashFlow.total)} so với tổng vốn đã bỏ vào — số này không bị lệch bởi gối đầu thanh toán, nhưng chỉ phản ánh dòng tiền, chưa phải lãi/lỗ kế toán thật.` });
-  else notes.push({ ok:false, text:`⚠️ Dòng Tiền Ròng cộng dồn cả quá trình đang âm ${fmtVND(Math.abs(allTimeCashFlow.total))} so với tổng vốn đã bỏ vào — cần xem lại chi phí hoặc tăng sản lượng dài hạn.` });
-  if(trueProfitAfterDepreciation>=0) notes.push({ ok:true, text:`✅ lợi nhuận thực tế cộng dồn (đã trừ khấu hao, không trừ nhầm gốc vay) vẫn đang dương ${fmtVND(trueProfitAfterDepreciation)} — dự án đang thật sự có lời đúng chuẩn kế toán.` });
-  else notes.push({ ok:false, text:`⚠️ lợi nhuận thực tế cộng dồn (đã trừ khấu hao, không trừ nhầm gốc vay) đang âm ${fmtVND(Math.abs(trueProfitAfterDepreciation))} — dự án đang lỗ thật khi tính đủ chuẩn kế toán, cần xem lại chiến lược dài hạn.` });
+  if(allTimeCashFlow.total>=0) notes.push({ ok:true, text:`✅ Cộng dồn CẢ QUÁ TRÌNH đang LÃI TIỀN MẶT ${fmtVND(allTimeCashFlow.total)} — số này không bị lệch bởi gối đầu thanh toán, nhưng chỉ phản ánh dòng tiền, chưa phải lãi/lỗ kế toán thật.` });
+  else notes.push({ ok:false, text:`⚠️ Dòng Tiền Ròng cộng dồn cả quá trình đang âm ${fmtVND(Math.abs(allTimeCashFlow.total))} — cần xem lại chi phí hoặc tăng sản lượng dài hạn.` });
+  if(trueProfitAfterDepreciation>=0) notes.push({ ok:true, text:`✅ lợi nhuận thực tế cộng dồn vẫn đang dương ${fmtVND(trueProfitAfterDepreciation)} — dự án đang thật sự có lời đúng chuẩn kế toán.` });
+  else notes.push({ ok:false, text:`⚠️ lợi nhuận thực tế cộng dồn đang âm ${fmtVND(Math.abs(trueProfitAfterDepreciation))} — dự án đang lỗ thật khi tính đủ chuẩn kế toán, cần xem lại chiến lược dài hạn.` });
 
   if(breakEven.breakEvenTrips!==null){
     if(breakEven.actualTrips>=breakEven.breakEvenTrips) notes.push({ ok:true, text:`✅ Đã vượt điểm hoà vốn kỳ này: chạy ${breakEven.actualTrips}/${breakEven.breakEvenTrips} chuyến cần để hoà vốn (dư ${breakEven.actualTrips-breakEven.breakEvenTrips} chuyến).` });
@@ -21456,8 +21476,6 @@ function computeBusinessReport(from, to){
   } else if(breakEven.note) notes.push({ ok:false, text:`⚠️ ${breakEven.note}` });
 
   // #332 — góc nhìn DỰ ÁN: so Vốn Chủ Sở Hữu Dự Án với Vốn tự có của Ông Chủ.
-  if(equity.projectEquity>=equity.ownCapital) notes.push({ ok:true, text:`✅ Vốn Chủ Sở Hữu Dự Án (${fmtVND(equity.projectEquity)}) đang cao hơn vốn tự có cá nhân ${ownerTitle()} bỏ vào (${fmtVND(equity.ownCapital)}) — dự án đang tích luỹ lời.` });
-  else notes.push({ ok:false, text:`⚠️ Vốn Chủ Sở Hữu Dự Án (${fmtVND(equity.projectEquity)}) đang thấp hơn vốn tự có cá nhân ${ownerTitle()} bỏ vào (${fmtVND(equity.ownCapital)}) — dự án đang "ăn" ngược vào vốn, cần theo dõi sát.` });
 
   const custRevShareOfDebt = commercialPaymentsInRange+cargoPaymentsInRange>0 ? debtSummary.totalCustomerOwed/(commercialPaymentsInRange+cargoPaymentsInRange) : 0;
   if(debtSummary.totalCustomerOwed>0.5){
@@ -21466,14 +21484,10 @@ function computeBusinessReport(from, to){
   }
   if(debtSummary.totalSupplierOwed>0.5) notes.push({ ok:null, text:`ℹ️ Đang còn nợ nhà cung cấp ${fmtVND(debtSummary.totalSupplierOwed)} — cần chuẩn bị dòng tiền để thanh toán đúng hạn, tránh gián đoạn nguồn hàng.` });
 
-  if(!charterStatus.isPastDeadline && charterStatus.remaining>0 && charterStatus.daysUntilDeadline!==null && charterStatus.daysUntilDeadline<=30)
-    notes.push({ ok:false, text:`⚠️ Còn thiếu ${fmtVND(charterStatus.remaining)} vốn điều lệ, hạn góp đủ chỉ còn ${charterStatus.daysUntilDeadline} ngày — cần góp bù sớm.` });
-  if(charterStatus.isPastDeadline) notes.push({ ok:false, text:`⚠️ đã quá hạn góp đủ vốn điều lệ — rủi ro pháp lý, cần xử lý ngay hoặc liên hệ kế toán/tư vấn pháp lý.` });
 
-  if(!bankRecon) notes.push({ ok:null, text:`ℹ️ Chưa khai báo mốc chốt Kế Toán Nội Bộ (nhánh Ngân hàng) lần nào — nên khai 1 lần theo đúng sao kê thật để bắt đầu đối chiếu.` });
 
   if(warnings.total>0) notes.push({ ok:false, text:`⚠️ Đang có ${warnings.total} cảnh báo cần xử lý (giấy tờ sắp hết hạn/bảo dưỡng đến hạn/khoản vay đến hạn/hoá đơn thiếu/thiếu ngày lấy hàng) — xem chi tiết ở khối "Cần Lưu Tâm" bên dưới.` });
-  else notes.push({ ok:true, text:`✅ Không có cảnh báo vận hành nào đang treo (giấy tờ/bảo dưỡng/khoản vay/hoá đơn đều ổn).` });
+  else notes.push({ ok:true, text:`✅ Không có cảnh báo vận hành nào đang treo (giấy tờ/bảo dưỡng/hoá đơn đều ổn).` });
 
   return { from, to, daysInRange, inRange, cashFlow, breakEven, commercialPaymentsInRange, cargoPaymentsInRange,
     avgTripsPerDay, equity, allTimeCashFlow, totalCapitalIn, cumulativeAccrual, trueProfitAfterDepreciation, charterStatus, debtSummary, bankRecon, warnings, notes };
@@ -21499,29 +21513,29 @@ function renderBusinessReportPage(from, to, preserveScroll){
         <div class="grid-table-wrap" style="margin-top:10px; text-align:left;">
           <table class="grid-table">
             <tbody>
-              <tr><td>Tổng vốn đã bỏ vào (mua xe + góp thêm)</td><td class="num">${fmtVND(r.totalCapitalIn)}</td></tr>
+
               <tr class="grid-total-row"><td style="text-align:left;">${r.allTimeCashFlow.total>=0?'Lãi':'Lỗ'} tiền mặt tính đến hôm nay</td><td class="num" style="color:${r.allTimeCashFlow.total>=0?'var(--profit)':'var(--loss)'}">${r.allTimeCashFlow.total>=0?'+':''}${fmtVND(r.allTimeCashFlow.total)}</td></tr>
             </tbody>
           </table>
         </div>
-        <div style="font-weight:900; font-size:24px; color:${r.allTimeCashFlow.total>=0?'var(--profit)':'var(--loss)'}; margin-top:10px;">${r.totalCapitalIn>0 ? fmtDec((r.allTimeCashFlow.total/r.totalCapitalIn*100), 1) : '0'}% trên vốn</div>
-        <div class="hint" style="margin-top:6px;">Trả lời: "Tiền mặt/ngân hàng công ty đang nhiều hơn hay ít hơn lúc bỏ vào?" — chưa tính xe đang cũ đi.</div>
+
+        <div class="hint" style="margin-top:6px;">Tổng tiền thực thu − thực chi của cả quá trình, ${ownerTitle()} đối chiếu với sổ tiền thật.</div>
         <button class="btn btn-ghost btn-block" id="bizCashDetailBtn" style="margin-top:10px;">📋 Chi Tiết Cách Tính — Theo Từng Ngày</button>
       </div>
 
       <div class="card" style="text-align:center; margin-top:12px; border:2px solid ${r.trueProfitAfterDepreciation>=0?'var(--profit)':'var(--loss)'}; background:var(--accent-soft);">
-        <div style="font-weight:700; font-size:13px; color:var(--ink-soft);">Lợi Nhuận Thực Tế (chuẩn kế toán, đã trừ khấu hao)</div>
+        <div style="font-weight:700; font-size:13px; color:var(--ink-soft);">Lợi Nhuận Thực Tế Cộng Dồn</div>
         <div class="grid-table-wrap" style="margin-top:10px; text-align:left;">
           <table class="grid-table">
             <tbody>
               <tr><td>Lợi nhuận gộp cộng dồn (Doanh thu − Chi phí biến đổi)</td><td class="num" style="color:${r.cumulativeAccrual.grossProfit>=0?'var(--profit)':'var(--loss)'}">${fmtVND(r.cumulativeAccrual.grossProfit)}</td></tr>
-              <tr><td>− Chi phí cố định cộng dồn (gồm khấu hao + lãi vay, không gồm gốc vay)</td><td class="num" style="color:var(--loss);">−${fmtVND(r.cumulativeAccrual.fixedCost)}</td></tr>
+              <tr><td>− Chi phí cố định cộng dồn (bảo hiểm, đăng kiểm, luật đường, nhà, cầu đường…)</td><td class="num" style="color:var(--loss);">−${fmtVND(r.cumulativeAccrual.fixedCost)}</td></tr>
               <tr class="grid-total-row"><td style="text-align:left;">= ${r.trueProfitAfterDepreciation>=0?'Lãi':'Lỗ'} Thực Tế cộng dồn</td><td class="num" style="color:${r.trueProfitAfterDepreciation>=0?'var(--profit)':'var(--loss)'}">${r.trueProfitAfterDepreciation>=0?'+':''}${fmtVND(r.trueProfitAfterDepreciation)}</td></tr>
             </tbody>
           </table>
         </div>
-        <div style="font-weight:900; font-size:26px; color:${r.trueProfitAfterDepreciation>=0?'var(--profit)':'var(--loss)'}; margin-top:10px;">${r.totalCapitalIn>0 ? fmtDec((r.trueProfitAfterDepreciation/r.totalCapitalIn*100), 1) : '0'}% ${r.trueProfitAfterDepreciation>=0?'lãi':'lỗ'} thật trên vốn</div>
-        <div class="hint" style="margin-top:6px;">Trả lời đúng câu: "Bỏ ra ${fmtVND(r.totalCapitalIn)} vào dự án xe, ${ownerTitle()} lãi/lỗ thật bao nhiêu?" — đúng chuẩn kế toán: đã trừ khấu hao (hao mòn tài sản thật) và lãi vay, không trừ gốc vay (gốc vay chỉ chuyển tiền mặt thành giảm nợ, không làm giảm vốn thật).</div>
+
+        <div class="hint" style="margin-top:6px;">Doanh thu − toàn bộ chi phí, cộng dồn từ ngày bắt đầu đến hôm nay.</div>
       </div>
     </section>
 
@@ -21583,7 +21597,7 @@ function renderBusinessReportPage(from, to, preserveScroll){
             <tr><td>− Chi phí vận hành (dầu/lương/ăn/phát sinh)</td><td class="num">−${fmtVND(r.cashFlow.operatingCashCost)}</td></tr>
             <tr><td>− Sửa chữa</td><td class="num">−${fmtVND(r.cashFlow.repairTotal)}</td></tr>
             <tr><td>− Luật đường + Nhà/điện + Cầu đường</td><td class="num">−${fmtVND(r.cashFlow.roadFee+r.cashFlow.houseRent+r.cashFlow.utilities+r.cashFlow.tollFee)}</td></tr>
-            <tr><td>− Cố định (khấu hao/vay/bảo hiểm/đăng kiểm)</td><td class="num">−${fmtVND(r.cashFlow.fixedMonthly)}</td></tr>
+            <tr><td>− Cố định (bảo hiểm/đăng kiểm)</td><td class="num">−${fmtVND(r.cashFlow.fixedMonthly)}</td></tr>
             <tr><td>− Mua Lô Hoá Đơn Bù</td><td class="num">−${fmtVND(r.cashFlow.invoiceLotCashOut)}</td></tr>
             <tr><td>− Tạm ứng lương tài xế</td><td class="num">−${fmtVND(r.cashFlow.advanceCashOut)}</td></tr>
             <tr class="grid-total-row"><td style="text-align:left;">= DÒNG TIỀN THẬT RÒNG TRONG KỲ</td><td class="num" style="color:${r.cashFlow.total>=0?'var(--profit)':'var(--loss)'}">${r.cashFlow.total>=0?'+':''}${fmtVND(r.cashFlow.total)}</td></tr>
@@ -21592,7 +21606,7 @@ function renderBusinessReportPage(from, to, preserveScroll){
       </div>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🏦 IV. Vốn & Vốn Điều Lệ (Tính Đến Hôm Nay)</h3>
       <div class="grid-table-wrap">
         <table class="grid-table">
@@ -21608,7 +21622,7 @@ function renderBusinessReportPage(from, to, preserveScroll){
     </section>
 
     <section class="group">
-      <h3>🤝 V. Công Nợ Hiện Tại</h3>
+      <h3>🤝 IV. Công Nợ Hiện Tại</h3>
       <div class="grid-table-wrap">
         <table class="grid-table">
           <thead><tr><th>Đối Tượng</th><th class="num">Số Tiền</th></tr></thead>
@@ -21619,13 +21633,13 @@ function renderBusinessReportPage(from, to, preserveScroll){
           </tbody>
         </table>
       </div>
-      ${r.bankRecon ? `
-      <div class="hint" style="margin-top:8px;">🏦 Kế Toán Nội Bộ (TK Doanh Nghiệp) — mốc chốt ${formatDateVN(r.bankRecon.checkpoint.date)}: ${fmtVND(r.bankRecon.checkpoint.balance)} → Số dư app tính hôm nay: <strong>${fmtVND(r.bankRecon.computedBalance)}</strong>.</div>
-      ` : `<div class="hint" style="margin-top:8px;">Chưa khai báo mốc chốt Kế Toán Nội Bộ (nhánh Ngân hàng) nào.</div>`}
+
+
+
     </section>
 
     <section class="group">
-      <h3>🔎 VI. Cần Lưu Tâm / Nhận Định</h3>
+      <h3>🔎 V. Cần Lưu Tâm / Nhận Định</h3>
       <div class="card" style="padding:0; overflow:hidden;">
         ${r.notes.map(n=>`<div style="padding:12px 14px; border-bottom:1px solid var(--border); color:${n.ok===true?'var(--profit)':n.ok===false?'var(--loss)':'var(--ink)'};">${escapeHtml(n.text)}</div>`).join('')}
       </div>
@@ -22231,6 +22245,42 @@ function openCharterCapitalEditor(){
     restoreMainScroll();
   });
 }
+/// Bản 2.4 — bảng "Sổ Từng Xe" ở trang Công Ty: mỗi xe 1 dòng, bấm mở sổ của xe.
+function vehicleBookSummaryHtml(){
+  const ym = todayLocalDateStr().slice(0,7);
+  const from = ym+'-01', to = ym+'-'+String(new Date(Number(ym.slice(0,4)), Number(ym.slice(5,7)), 0).getDate()).padStart(2,'0');
+  const rows = (state.vehicles||[]).map(v=>{
+    const road = (state.allVehiclesRoadFee[v.id]||[]).find(x=>x.month===ym);
+    const toll = tollFeeForRangeVehicle(v.id, from, to);
+    const st = state.allVehiclesSettings[v.id] || {};
+    const fixed = (Number(st.monthlyInsurance)||0) + (Number(st.monthlyRegistrationFee)||0);
+    const money = n => n>0.5 ? `<b>${fmtVND(n)}</b>` : '—';
+    return `<div class="card vbook-row" data-vbook-vid="${v.id}" style="padding:12px 14px; margin-bottom:8px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <div style="font-weight:800; font-size:15.5px;">🚛 ${escapeHtml(v.name||v.plate||'')}</div>
+        <div style="color:var(--accent); font-weight:800; font-size:13px; white-space:nowrap;">Mở sổ ›</div>
+      </div>
+      <div class="hint" style="margin:4px 0 0;">Luật đường ${money(road?Number(road.amount)||0:0)} · Cầu đường ${money(toll)} · BH + Đăng kiểm ${money(fixed)}</div>
+      <div class="hint vbook-warn" data-vbook-warn="${v.id}" style="margin:2px 0 0;"></div>
+    </div>`;
+  }).join('');
+  return rows;
+}
+/// Đếm giấy tờ còn ≤ 30 ngày và bảo dưỡng còn ≤ 1.000 km của TỪNG xe (đọc riêng từng xe, không đổi xe đang chọn).
+async function fillVehicleBookWarnings(){
+  for(const v of (state.vehicles||[])){
+    try {
+      const [dSnap, mSnap] = await Promise.all([vehicleDataRef(v.id,'documents').get(), vehicleDataRef(v.id,'maintenanceSchedules').get()]);
+      const docs = dSnap.exists ? (dSnap.data().list||[]) : [];
+      const maint = mSnap.exists ? (mSnap.data().list||[]) : [];
+      const odo = (state.allVehiclesShifts[v.id]||[]).reduce((m,sh)=>Math.max(m, Number(sh.odoEnd)||0, Number(sh.odoStart)||0), 0);
+      const nDoc = docs.filter(d=>d.expiryDate && daysUntilLocal(d.expiryDate)<=30).length;
+      const nMaint = maint.filter(m=>((Number(m.lastDoneOdo)||0)+(Number(m.intervalKm)||0)) - odo <= 1000).length;
+      const el = document.querySelector(`[data-vbook-warn="${v.id}"]`);
+      if(el) el.innerHTML = (nDoc||nMaint) ? `<span style="color:var(--loss); font-weight:700;">⚠️ ${[nDoc?nDoc+' giấy tờ sắp hết hạn':'', nMaint?nMaint+' bảo dưỡng đến hạn':''].filter(Boolean).join(' · ')}</span>` : '✅ Giấy tờ, bảo dưỡng ổn';
+    } catch(e){ console.error('fillVehicleBookWarnings', e); }
+  }
+}
 function renderCompanyDashboardPage(preserveScroll){
   // SỬA 2026-09-20 (rà sâu toàn app theo yêu cầu Ông Chủ — đây là nguồn
   // gây lỗi NHIỀU NHẤT): hàm này là màn "🏢 Linh Chí Thành" — vốn đúng khi
@@ -22783,7 +22833,7 @@ function renderCompanyDashboardPage(preserveScroll){
             <tr><td>− Chi phí vận hành (dầu, lương, ăn, nhà, phát sinh)</td><td class="num">−${fmtVND(breakdown.operatingCashCost)}</td></tr>
             <tr><td>− Sửa chữa</td><td class="num">−${fmtVND(breakdown.repairTotal)}</td></tr>
             <tr><td>− Luật đường</td><td class="num">−${fmtVND(breakdown.roadFee)}</td></tr>
-            <tr><td>− Gốc + Lãi Vay Ngân Hàng (tất cả xe)</td><td class="num">−${fmtVND(breakdown.loanPayment)}</td></tr>
+            ${Math.abs(Number(breakdown.loanPayment)||0)>0.5 ? `<tr><td>− Gốc + Lãi Vay Ngân Hàng (tất cả xe)</td><td class="num">−${fmtVND(breakdown.loanPayment)}</td></tr>` : ''}
             <tr><td>− Bảo hiểm + Đăng kiểm (tất cả xe)</td><td class="num">−${fmtVND(breakdown.insuranceReg)}</td></tr>
             <tr><td>− Mua Lô Hoá Đơn Bù (tiền thật đã trả đối tác — đủ cả lô, kể cả phần chưa dùng)</td><td class="num">−${fmtVND(breakdown.invoiceLotCashOut)}</td></tr>
             <tr><td>− Tạm ứng lương tài xế (chưa phải chi phí — trừ lại khi quyết toán lương)</td><td class="num">−${fmtVND(breakdown.advanceCashOut)}</td></tr>
@@ -22963,7 +23013,7 @@ function renderCompanyDashboardPage(preserveScroll){
     </section>
 
     <section class="group">
-      <h3>🏠 Tiền Thuê Nhà & Điện Nước Theo Tháng — 🏢 chung công ty</h3>
+      <h3>🏢 Chi Phí Chung Công Ty — Nhà & Điện Nước</h3>
       <div style="display:flex; gap:8px; margin-bottom:8px;">
         <input type="month" id="dash_hu_newMonth" style="flex:1;" value="${todayLocalDateStr().slice(0,7)}">
         <button class="btn btn-accent" id="dash_addHousingUtilMonthBtn" style="font-weight:700;">+ Thêm Tháng</button>
@@ -23011,22 +23061,27 @@ function renderCompanyDashboardPage(preserveScroll){
       <button class="btn btn-ghost btn-block" id="openVatPaymentsBtn">🧾 Xem / Ghi Nhận Đã Nộp Thuế VAT</button>
     </section>
 
-    <section class="group" style="margin-top:26px;">
-      <div style="border:2px solid var(--accent); border-radius:14px; padding:12px 14px; background:var(--accent-soft);">
-        <div style="font-weight:900; font-size:16px;">🚛 PHẦN RIÊNG TỪNG XE${noVehicleChosenForPerVehicleData ? '' : ` — ${escapeHtml(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||'')}`}</div>
-        <div class="hint" style="margin:4px 0 0;">Từ đây xuống là của đúng 1 xe đang chọn: luật đường, cầu đường, chi phí cố định, giấy tờ, bảo dưỡng. Mọi mục phía trên là của chung ${companyTag()}.</div>
+    <section class="group vbook-section">
+      <button class="btn btn-ghost btn-sm" id="vbookBackBtn">← Sổ Từng Xe</button>
+      <div style="border:2px solid var(--accent); border-radius:14px; padding:12px 14px; background:var(--accent-soft); margin-top:10px;">
+        <div style="font-weight:900; font-size:17px;">🚛 SỔ XE — ${escapeHtml(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||'')}</div>
+        <div class="hint" style="margin:4px 0 0;">Luật đường, cầu đường, chi phí cố định, giấy tờ, bảo dưỡng của riêng xe này.</div>
         ${(state.vehicles||[]).length>1 ? `
-        <div style="font-weight:800; margin:10px 0 6px;">Đang cài đặt cho xe nào? Bấm để đổi xe:</div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          ${state.vehicles.map(v=>`<button class="btn ${v.id===activeVehicleIdForEditing()?'btn-accent':'btn-ghost'} dash-veh-switch" data-vid="${v.id}" style="flex:1 1 40%; font-weight:800;">${v.id===activeVehicleIdForEditing()?'✅ ':''}🚛 ${escapeHtml(v.name||v.plate||'(chưa đặt tên)')}</button>`).join('')}
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+          ${state.vehicles.map(v=>`<button class="btn btn-sm ${v.id===activeVehicleIdForEditing()?'btn-accent':'btn-ghost'} dash-veh-switch" data-vid="${v.id}" style="flex:1 1 28%; font-weight:800;">${v.id===activeVehicleIdForEditing()?'✅ ':''}${escapeHtml(v.name||v.plate||'')}</button>`).join('')}
         </div>` : ''}
       </div>
     </section>
 
     <section class="group">
+      <h3>🚛 Sổ Từng Xe</h3>
+      <div class="hint" style="margin:-4px 0 8px;">Chi phí riêng tháng ${monthLabelVN(todayLocalDateStr().slice(0,7))} và cảnh báo của từng xe. Bấm vào 1 xe để xem/sửa luật đường, cầu đường, chi phí cố định, giấy tờ, bảo dưỡng.</div>
+      ${vehicleBookSummaryHtml()}
+    </section>
+
+    <section class="group vbook-section">
       <h3>🚧 Tiền Luật Đường Theo Tháng${noVehicleChosenForPerVehicleData ? '' : ` — 🚛 ${escapeHtml(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||'')}`}</h3>
       ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `
-      <div class="hint" style="margin:0 0 8px;">Riêng từng xe — bảng dưới là của đúng xe đang chọn. Muốn xem/nhập xe khác thì bấm tên xe trong khung cam ở trên.</div>
       <div style="display:flex; gap:8px; margin-bottom:8px;">
         <input type="month" id="dash_rf_newMonth" style="flex:1;" value="${todayLocalDateStr().slice(0,7)}">
         <button class="btn btn-accent" id="dash_addRoadFeeMonthBtn" style="font-weight:700;">+ Thêm Tháng</button>
@@ -23034,10 +23089,9 @@ function renderCompanyDashboardPage(preserveScroll){
       <div id="roadFeeMonthListWrap"></div>`}
     </section>
 
-    <section class="group">
+    <section class="group vbook-section">
       <h3>🌉 CP Cầu Đường Theo Tháng${noVehicleChosenForPerVehicleData ? '' : ` — 🚛 ${escapeHtml(((state.vehicles||[]).find(v=>v.id===activeVehicleIdForEditing())||{}).name||'')}`}</h3>
       ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `
-      <div class="hint" style="margin:0 0 8px;">Riêng từng xe (đi theo tuyến xe chạy) — bảng dưới là của đúng xe đang chọn.</div>
       <div style="display:flex; gap:8px; margin-bottom:8px;">
         <input type="month" id="dash_tf_newMonth" style="flex:1;" value="${todayLocalDateStr().slice(0,7)}">
         <button class="btn btn-accent" id="dash_addTollFeeMonthBtn" style="font-weight:700;">+ Thêm Tháng</button>
@@ -23053,14 +23107,14 @@ function renderCompanyDashboardPage(preserveScroll){
       `}
     </section>
 
-    <section class="group">
+    <section class="group vbook-section">
       <h3>💰 Chi Phí Cố Định Hàng Tháng (Ngoài Vận Hành)</h3>
       ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `
       <div class="grid-table-wrap">
         <table class="grid-table">
           <thead><tr><th>Khoản Mục</th><th class="num">Số Tiền/Tháng</th></tr></thead>
           <tbody>
-            <tr><td>🚚 Khấu hao xe dự kiến</td><td class="num">${fmtVND(state.settings.monthlyVehicleDepreciation||0)}</td></tr>
+            ${FEATURE_DEPRECIATION_LOANS ? `<tr><td>🚚 Khấu hao xe dự kiến</td><td class="num">${fmtVND(state.settings.monthlyVehicleDepreciation||0)}</td></tr>` : ''}
             <tr><td>🛡️ Bảo hiểm xe</td><td class="num">${fmtVND(state.settings.monthlyInsurance||0)}</td></tr>
             <tr><td>📋 Đăng kiểm/Đăng ký/Phù hiệu vận tải</td><td class="num">${fmtVND(state.settings.monthlyRegistrationFee||0)}</td></tr>
           </tbody>
@@ -23068,18 +23122,19 @@ function renderCompanyDashboardPage(preserveScroll){
       </div>
       <div style="display:flex; gap:10px; margin-top:10px;">
         <button class="btn btn-ghost" id="editFixedCostsBtn" style="flex:1;">✏️ Sửa</button>
-        <button class="btn btn-ghost" id="depreciationDetailBtn" style="flex:1;">📊 Chi Tiết Thu Hồi Khấu Hao</button>
+        <button class="btn btn-ghost ${FEATURE_DEPRECIATION_LOANS?'':'sx-removed'}" id="depreciationDetailBtn" style="flex:1;">📊 Chi Tiết Thu Hồi Khấu Hao</button>
       </div>
       <button class="btn btn-ghost btn-block sx-removed" id="vehicleProfileBtn" style="margin-top:10px;">🚛 Quản Lý Xe (sở hữu · đầu tư · khấu hao · thuê · bán)</button>
       `}
     </section>
 
-    <section class="group">
+    <section class="group vbook-section">
       <h3>📄 Giấy Tờ Xe & Tài Xế</h3>
-      ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `<div id="documentListWrap"></div>`}
+      ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `<div id="documentListWrap"></div>
+      <button class="btn btn-ghost btn-block" id="dash_addDocumentBtn" style="margin-top:8px;">+ Thêm Giấy Tờ</button>`}
     </section>
 
-    <section class="group">
+    <section class="group vbook-section">
       <h3>🔧 Lịch Bảo Dưỡng Định Kỳ</h3>
       ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `<div id="maintenanceListWrap"></div>
       <button class="btn btn-ghost btn-block" id="dash_addMaintenanceBtn" style="margin-top:8px;">+ Thêm Hạng Mục Bảo Dưỡng</button>`}
@@ -23239,6 +23294,18 @@ function renderCompanyDashboardPage(preserveScroll){
       saveMainScroll(); await switchVehicle(btn.dataset.vid); restoreMainScroll();
     });
   });
+  document.querySelectorAll('.vbook-row').forEach(row=>row.addEventListener('click', async ()=>{
+    saveMainScroll();
+    state.vehicleBookOpen = true;
+    const vid = row.dataset.vbookVid;
+    if(vid!==activeVehicleIdForEditing()) await switchVehicle(vid); else renderAll();
+    scrollMainToTop();
+  }));
+  const vbookBackBtn = document.getElementById('vbookBackBtn');
+  if(vbookBackBtn) vbookBackBtn.addEventListener('click', ()=>{ state.vehicleBookOpen = false; renderAll(); restoreMainScroll(); });
+  const dashAddDocBtn = document.getElementById('dash_addDocumentBtn');
+  if(dashAddDocBtn) dashAddDocBtn.addEventListener('click', ()=>openDocumentEditor(null));
+  if(!state.vehicleBookOpen) fillVehicleBookWarnings();
   document.querySelectorAll('.per-vehicle-notice-btn').forEach(btn=>{
     btn.addEventListener('click', async ()=>{ saveMainScroll(); await switchVehicle(btn.dataset.vid); restoreMainScroll(); });
   });
@@ -23384,7 +23451,7 @@ function renderCompanyCashFlowLedgerPage(){
   const tollFeeRows = tollFeeListsByVehicle().flatMap(({v,list})=>list.filter(e=>Number(e.amount)>0).map(e=>({ date:`${e.month}-01`, desc:`Cầu đường (tháng ${monthLabelVN(e.month)})${v?` — 🚛 ${v.name||v.plate}`:''}`, method:e.method||'bank', amount:Number(e.amount)||0, sign:-1 }))); // #350
   const loanPaymentRows = state.vehicles.flatMap(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return loans.flatMap(loan=>{
       const paidSet = new Set(Array.isArray(loan.paidMonths)?loan.paidMonths:[]);
       return computeFullLoanSchedule(loan).map(p=>{
@@ -23398,7 +23465,7 @@ function renderCompanyCashFlowLedgerPage(){
   });
   const loanDisbursedRows = state.vehicles.flatMap(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return loans.filter(loan=>loanDisbursedToCompanyAccount(loan) && loan.disbursementDate)
       .map(loan=>({ date:loan.disbursementDate, desc:`Giải ngân ${loan.name||'Khoản vay'} — 🚛 ${v.name||v.plate}`, method:'bank', amount:Number(loan.principal)||0, sign:1 }));
   });
@@ -23696,7 +23763,7 @@ function depreciationAccruedForVehicle(vid, asOfDate){
     const rangeEnd = today < monthEnd ? today : monthEnd;
     if(rangeStart>rangeEnd) return;
     const overlapDays = daysBetweenDates(new Date(rangeStart+'T00:00:00'), new Date(rangeEnd+'T00:00:00')) + 1;
-    total += (Number(s.monthlyVehicleDepreciation)||0) * (overlapDays/dim);
+    total += depMonthlyOf(s) * (overlapDays/dim);
   });
   return total;
 }
@@ -23716,7 +23783,7 @@ function renderDepreciationReserveHistoryPage(focusVid){
     const outCash = list.filter(t=>t.direction!=='toReserve' && (t.method||'bank')==='cash').reduce((s,t)=>s+(Number(t.amount)||0),0);
     const balance = inBank + inCash - outBank - outCash;
     const s = vid==='_none' ? null : state.allVehiclesSettings[vid];
-    const monthlyRate = s ? (Number(s.monthlyVehicleDepreciation)||0) : 0;
+    const monthlyRate = s ? depMonthlyOf(s) : 0;
     const accrued = vid==='_none' ? 0 : depreciationAccruedForVehicle(vid);
     const startDate = vid==='_none' ? null : vehicleOperatingStartDate(vid);
     const v = (state.vehicles||[]).find(x=>x.id===vid);
@@ -24212,7 +24279,7 @@ function renderBankReconDetailPage(mode){
   // tiền chưa hề rời khỏi túi. Sửa cả 2 chiều cho đúng.
   const bankLoanPaymentItems = bankRecon ? state.vehicles.flatMap(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return loans.flatMap(loan=>{
       const paidSet = new Set(Array.isArray(loan.paidMonths)?loan.paidMonths:[]);
       return computeFullLoanSchedule(loan)
@@ -24222,7 +24289,7 @@ function renderBankReconDetailPage(mode){
   }) : [];
   const cashLoanPaymentItems = cashRecon ? state.vehicles.flatMap(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return loans.flatMap(loan=>{
       const paidSet = new Set(Array.isArray(loan.paidMonths)?loan.paidMonths:[]);
       return computeFullLoanSchedule(loan)
@@ -24254,7 +24321,7 @@ function renderBankReconDetailPage(mode){
   }) : [];
   const bankLoanDisbursedItems = bankRecon ? state.vehicles.flatMap(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     return loans.filter(loan=>loanDisbursedToCompanyAccount(loan) && loan.disbursementDate && loan.disbursementDate>bankRecon.checkpoint.date && loan.disbursementDate<=rangeTo)
       .map(loan=>({ date:loan.disbursementDate, label:`Giải ngân ${escapeHtml(loan.name||'Khoản vay')} — 🚛 ${v.name||v.plate}`, amount: Number(loan.principal)||0, sign:1 }));
   }) : [];
@@ -24656,7 +24723,7 @@ function renderEquityDetailPage(){
   const loanRows = [];
   state.vehicles.forEach(v=>{
     const s = state.allVehiclesSettings[v.id] || {};
-    const loans = Array.isArray(s.bankLoans) ? s.bankLoans : (s.bankLoan && Number(s.bankLoan.principal)>0 ? [s.bankLoan] : []);
+    const loans = activeLoansOf(s);
     loans.forEach(loan=>{
       const originalPrincipal = Number(loan.principal)||0;
       const paidSet = new Set(Array.isArray(loan.paidMonths) ? loan.paidMonths : []);
@@ -24904,7 +24971,7 @@ function renderSettings(){
       <button class="btn btn-ghost btn-sm" id="saveLotPriceOverridesBtn" style="margin-top:10px;">💾 Lưu Giả Định Giá</button>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>📋 Giấy Tờ Xe & Tài Xế</h3>
       <div class="hint" style="margin-bottom:10px;">App tự cảnh báo khi còn 30 ngày là hết hạn (hiện ngay ở tab "Ca Làm Việc"), càng gần hạn càng cảnh báo gấp hơn. Nạp ngày hết hạn thật vào đây 1 lần, sau đó chỉ cần cập nhật lại khi gia hạn xong.</div>
       <div style="display:flex; justify-content:flex-end;">
@@ -24912,14 +24979,14 @@ function renderSettings(){
       </div>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🔧 Lịch Bảo Dưỡng Định Kỳ</h3>
       <div style="display:flex; justify-content:flex-end;">
         <button class="btn btn-accent" id="addMaintenanceBtn" style="font-weight:700; font-size:13.5px; width:50%; white-space:normal; line-height:1.3;">Thêm Hạng Mục Bảo Dưỡng</button>
       </div>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🚧 Tiền Luật Đường Theo Tháng</h3>
       <div style="display:flex; gap:8px;">
         <input type="month" id="rf_newMonth" style="flex:1;">
@@ -24927,7 +24994,7 @@ function renderSettings(){
       </div>
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🏠 Tiền Thuê Nhà & Điện Nước Theo Tháng</h3>
       <div style="display:flex; gap:8px;">
         <input type="month" id="hu_newMonth" style="flex:1;">
@@ -24940,7 +25007,7 @@ function renderSettings(){
     mirror NGUYÊN XI khối "Tiền Thuê Nhà & Điện Nước Theo Tháng" ở trên —
     CHUNG CÔNG TY, mỗi tháng điền tay 1 số duy nhất (khác Tiền Nhà/Điện
     Nước có 2 ô, vì đây chỉ có đúng 1 khoản). -->
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🌉 CP Cầu Đường Theo Tháng</h3>
       <div style="display:flex; gap:8px;">
         <input type="month" id="tf_newMonth" style="flex:1;">
@@ -26504,6 +26571,7 @@ function renderAll(){
   if(state.shiftArchiveMonth && state.shiftArchiveMonth===todayLocalDateStr().slice(0,7)){
     state.shiftArchiveMonth = null;
   }
+  document.body.classList.toggle('vbook-mode', !!(state.showCompanyDashboard && state.vehicleBookOpen && activeVehicleIdForEditing())); // Bản 2.4
   renderHeader();
   updateVehicleScopeBar();
   refreshSiteDatalist();
@@ -26607,6 +26675,7 @@ document.querySelectorAll('nav.tabbar button').forEach(btn=>{
     state.currentTab = btn.dataset.tab;
     state.view='list'; state.draftShift=null;
     state.showCompanyDashboard = false;
+    state.vehicleBookOpen = false;
     renderAll();
     updateVehicleScopeBar();
     if(!lastAutoRestoreHit && prevTab!==state.currentTab) scrollMainToTop();
