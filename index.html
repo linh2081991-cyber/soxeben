@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.0 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.2 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -22342,7 +22342,7 @@ function renderCompanyDashboardPage(preserveScroll){
 
       <button class="btn btn-accent btn-block" id="openBizReportBtn" style="font-size:15.5px; padding:14px; margin-bottom:10px;">📊 Báo Cáo Kinh Doanh Tổng Hợp</button>
       <button class="btn btn-ghost btn-block" id="openPerVehicleBtn" style="margin-bottom:8px;">🚛 Kết Quả Từng Xe</button>
-      <button class="btn btn-ghost btn-block" id="vehicleMgmtTopBtn" style="margin-bottom:14px; border:1.5px solid var(--accent);">🛠️ Quản Lý Xe — sở hữu · tiền đầu tư · khấu hao · khoản vay · thuê</button>
+      <button class="btn btn-ghost btn-block sx-removed" id="vehicleMgmtTopBtn" style="margin-bottom:14px; border:1.5px solid var(--accent);">🛠️ Quản Lý Xe — sở hữu · tiền đầu tư · khấu hao · khoản vay · thuê</button>
 
       ${(()=>{
         // #350 — bảng tổng hợp từng xe (tháng này): LINH CHÍ THÀNH là tổng chứa, mỗi xe 1 dòng số riêng.
@@ -22422,7 +22422,7 @@ function renderCompanyDashboardPage(preserveScroll){
       Tiền Nội Bộ (đã thu gọn: lịch sử chuyển tiền giờ xem qua nút "Chi
       Tiết" riêng thay vì liệt kê thẳng 10 dòng gần nhất ngay trên trang
       chính — xem renderInternalTransferHistoryPage() mới thêm). -->
-      <div class="card ent-only" style="margin-top:12px; padding:18px 12px 20px;">
+      <div class="card ent-only sx-removed" style="margin-top:12px; padding:18px 12px 20px;">
         <div style="text-align:center;">
           <button id="ktnbFullLedgerBtn" style="display:inline-block; padding:12px 22px; border-radius:16px; border:2px solid var(--accent); background:var(--accent-soft); cursor:pointer;">
             <div style="display:flex; justify-content:center;">
@@ -22531,7 +22531,7 @@ function renderCompanyDashboardPage(preserveScroll){
       </div>
     </section>
 
-    <section class="group ent-only">
+    <section class="group ent-only sx-removed">
       <h3>📊 Tổng Giá Trị Ròng Toàn Công Ty</h3>
       ${(()=>{
         const inventoryValue = companyWideInvoiceLotInventoryValue();
@@ -22623,6 +22623,7 @@ function renderCompanyDashboardPage(preserveScroll){
             </tbody>
           </table></div>`; })()}
 
+          <div class="sx-removed">
           <div style="font-weight:800; font-size:15px; margin:18px 0 2px;">🚛 Tài Sản Xe & Vay Nợ</div>
           <div class="hint" style="margin-top:0; margin-bottom:8px;">Bóc tách từng xe và từng khoản vay — khoản nào đứng tên công ty, khoản nào đứng tên cá nhân ${ownerTitle()}.</div>
           <button class="btn btn-ghost btn-sm" id="vehicleMgmtAssetBtn" style="width:auto; margin-bottom:8px;">🛠️ Sửa ở Quản Lý Xe →</button>
@@ -22681,6 +22682,7 @@ function renderCompanyDashboardPage(preserveScroll){
             </tbody>
           </table>
           ${projectPersonalRemaining>0.5 ? `<div class="hint" style="margin-top:8px;">ℹ️ Theo pháp lý công ty (không tính nợ đứng tên cá nhân ${ownerTitle()}): ${fmtVND(netAssetValue + projectPersonalRemaining)}. Số trên là góc nhìn dự án — đã trừ đủ mọi khoản nợ dùng cho dự án.</div>` : ''}
+          </div>
         </div>
 
         <!-- MỚI 2026-09-27 (${ownerTitle()} yêu cầu — "Cầu Nối Dòng Tiền"): CHỈ ĐỌC,
@@ -23016,7 +23018,7 @@ function renderCompanyDashboardPage(preserveScroll){
       <div id="tollFeeMonthListWrap"></div>`}
     </section>
 
-    <section class="group">
+    <section class="group sx-removed">
       <h3>🏦 Khoản Vay Ngân Hàng</h3>
       ${noVehicleChosenForPerVehicleData ? renderPerVehicleDataNotice() : `
       <div id="loanListWrap"></div>
@@ -23041,7 +23043,7 @@ function renderCompanyDashboardPage(preserveScroll){
         <button class="btn btn-ghost" id="editFixedCostsBtn" style="flex:1;">✏️ Sửa</button>
         <button class="btn btn-ghost" id="depreciationDetailBtn" style="flex:1;">📊 Chi Tiết Thu Hồi Khấu Hao</button>
       </div>
-      <button class="btn btn-ghost btn-block" id="vehicleProfileBtn" style="margin-top:10px;">🚛 Quản Lý Xe (sở hữu · đầu tư · khấu hao · thuê · bán)</button>
+      <button class="btn btn-ghost btn-block sx-removed" id="vehicleProfileBtn" style="margin-top:10px;">🚛 Quản Lý Xe (sở hữu · đầu tư · khấu hao · thuê · bán)</button>
       `}
     </section>
 
