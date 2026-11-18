@@ -809,7 +809,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 1.9 · 17/11/2026';
+const APP_BUILD = 'Bản sạch 2.0 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -1434,13 +1434,47 @@ function computeAllWarnings(){
   const loans = computeLoanDueWarnings();
   const invoices = computeInvoiceWarnings();
   const missingPickupDates = computeMissingPickupDateWarnings();
-  return { docs, maint, loans, invoices, missingPickupDates, total: docs.length + maint.length + loans.length + invoices.length + missingPickupDates.length };
+  const idleTrips = computeIdleShiftTripWarnings(); // Bản 2.0
+  return { docs, maint, loans, invoices, missingPickupDates, idleTrips, total: docs.length + maint.length + loans.length + invoices.length + missingPickupDates.length + idleTrips.length };
 }
 /// SỬA 2026-08-25 (Ông Chủ yêu cầu — mục C2): quét mọi chuyến thương mại
 /// đã chọn "Tài xế lấy hàng" khác tài xế ca (pickupDriverId) NHƯNG CHƯA
 /// chọn "Múc ngày nào?" (pickupDate còn trống) — đây là các chuyến còn
 /// đang phải ĐOÁN "ca gần nhất" trong phiếu lương/thẻ ca thay vì tính
 /// chính xác. Giúp Ông Chủ rà và bổ sung dần cho hết đoán mò.
+/// Bản 2.0 — ca KHÔNG phải "Hoạt Động" mà vẫn còn công trình/chuyến (dữ liệu nhập trước bản 2.0).
+function computeIdleShiftTripWarnings(){
+  try {
+    return shiftsCompanyWideSafe().filter(sh=>sh.status!=='active' && (sh.siteLogs||[]).length>0)
+      .map(sh=>({ shiftId: sh.id, vehicleId: sh._vehicleId, date: sh.date, shiftType: sh.shiftType,
+        statusLabel: (STATUS_OPTIONS.find(o=>o.key===sh.status)||{}).label || sh.status,
+        vehicleName: sh._vehicleId ? vehicleNameById(sh._vehicleId) : '' }))
+      .sort((a,b)=>b.date.localeCompare(a.date));
+  } catch(e){ console.error('computeIdleShiftTripWarnings lỗi:', e); return []; }
+}
+function openIdleShiftTripDetail(){
+  saveMainScroll();
+  const items = computeIdleShiftTripWarnings();
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <section class="group"><button class="btn btn-ghost btn-sm" id="idleTripBackBtn">← Quay Lại Ca Làm Việc</button></section>
+    <section class="group">
+      <h3>⛔ Ca Nghỉ Nhưng Có Chuyến</h3>
+      <div class="hint" style="margin-bottom:12px;">Ca nghỉ không chạy chuyến. Mở từng ca: đổi trạng thái về "Hoạt Động" nếu thực tế có chạy, hoặc xoá công trình nếu nhập nhầm. Còn tồn tại thì lãi lỗ và lương nợ tài xế sẽ lệch nhau.</div>
+      ${items.length===0 ? '<div class="hint">Không còn ca nào.</div>' : items.map(v=>`
+        <div class="card" style="padding:12px 14px; margin-bottom:8px;">
+          <div style="font-weight:700;">${formatDateVN(v.date)} · ${escapeHtml(shiftTypeLabel(v.shiftType))}${v.vehicleName && state.vehicles.length>1 ? ` — 🚛 ${escapeHtml(v.vehicleName)}` : ''}</div>
+          <div class="hint" style="margin-top:2px;">Trạng thái: ${escapeHtml(v.statusLabel)}</div>
+          <button class="btn btn-ghost btn-sm" data-shift-id="${escapeHtml(v.shiftId)}" data-vehicle-id="${escapeHtml(v.vehicleId||'')}" style="margin-top:8px;">Mở Ca Để Sửa →</button>
+        </div>`).join('')}
+    </section>`;
+  document.getElementById('idleTripBackBtn').addEventListener('click', ()=>{ renderAll(); restoreMainScroll(); });
+  app.querySelectorAll('button[data-shift-id]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const vid = btn.dataset.vehicleId;
+    if(vid && vid!==activeVehicleIdForEditing()) await switchVehicle(vid);
+    openShift(btn.dataset.shiftId);
+  }));
+}
 function computeMissingPickupDateWarnings(){
   // SỬA 2026-08-25: bọc try-catch cùng lý do với shiftCrossDriverInfo ở
   // trên — không để lỗi ở đây làm hỏng cả "5 Việc Cần Chú Ý" lẫn toàn bộ
@@ -1744,8 +1778,10 @@ function getRevenueExcludedShiftIds(){
 /// lương chuyến, chuyến mua-bán...) giữ NGUYÊN VẸN vì không phụ thuộc
 /// fuelEnd. Ca không có vấn đề gì trả về chính nó, không tạo bản sao thừa.
 function sanitizeShiftForRevenue(sh){
-  if(!shiftHasFuelOdoIssues(sh)) return sh;
-  return { ...sh, fuelEnd: (Number(sh.fuelStart)||0) + (Number(sh.fuelAdded)||0) };
+  // Bản 2.0 — quy tắc "dầu chờ = tạm tính 0" nay nằm ngay trong shiftFuelConsumed() nên mọi trang
+  // (Kết Quả, Kết Quả Từng Xe, lãi lỗ công ty, thẻ ca) dùng chung 1 cách tính. Trước đây chỉ riêng
+  // tab Kết Quả tạm tính 0 (kể cả ca chỉ thiếu ODO mà dầu đã đủ) → 2 trang lệch số.
+  return sh;
 }
 /// Full shift list minus the currently-excluded newest-but-incomplete ca
 /// above. Every fleet-wide historical average (tiêu hao dầu, lương
@@ -3996,7 +4032,7 @@ function vatOutputByMonth(){
     const ym = (sh.date||'').slice(0,7); if(!ym) return;
     (sh.siteLogs||[]).forEach(s=>{
       let com = 0, fr = 0;
-      if(s.siteType==='commercial') com = commercialNetSell(s) * (s.sellIncludesVat ? siteVatRateFraction(s) : 0);
+      if(s.siteType==='commercial') com = commercialNetSell(s) * (commercialSellVatApplies(s) ? siteVatRateFraction(s) : 0);
       else fr = siteFreightOutputVat(s);
       if(com<=0.0001 && fr<=0.0001) return;
       const o = out[ym] = out[ym] || { commercial:0, freight:0 };
@@ -7463,6 +7499,7 @@ function renderWarehouseDrawHistoryPage(goodsType, from, to){
           return normGoodsType(sellTypeRaw || buyType)===gt;
         }).length;
         const key = siteLogGroupKey(sh, idx, g.goodsType);
+        const realNeeded = siteGroupRealMissingVolume(s, g); // Bản 2.0 — trước đây dùng mà chưa khai báo → trang văng lỗi
         const rec = ledger.bySiteLog[key] || { allocations:[], shortfall: realNeeded };
         const customer = s.customerId ? customerById(s.customerId) : null;
         rows.push({
@@ -7853,7 +7890,7 @@ const COST_PART_NOTES = {
   'Thưởng tài xế': 'Tip / thưởng tháng của tài xế tính vào kỳ',
   'Chi phí tài xế báo tay': 'Chi phí tài xế tự báo (công tác phí) trong kỳ',
   'Thưởng / chi hộ tài xế': 'Tip, thưởng tháng và chi phí tài xế tự báo trong kỳ',
-  'Dầu tiêu hao': '(Dầu đầu ca + đổ thêm − cuối ca) × đơn giá dầu của từng ca; ca chưa nhập dầu cuối ca tạm tính = dầu đổ thêm',
+  'Dầu tiêu hao': '(Dầu đầu ca + đổ thêm − cuối ca) × đơn giá dầu của từng ca; ca chưa nhập dầu cuối ca tạm tính = 0',
   'Lương chuyến': 'Số chuyến × mức lương/chuyến của từng công trình trong ca',
   'Tiền ăn': 'Tiền ăn nhập ở từng ca',
   'Phát sinh trong ca': 'Chi phí phát sinh nhập ở từng ca',
@@ -9006,7 +9043,7 @@ function computeInvoiceMismatchWhatIf(from, to){
         const vatRate = siteVatRateFraction(s);
         const theoreticalCredit = netBuy * (invoicedPct/100) * vatRate;
         if(theoreticalCredit>0.5){
-          const outputVat = commercialNetSell(s) * (s.sellIncludesVat ? vatRate : 0);
+          const outputVat = commercialNetSell(s) * (commercialSellVatApplies(s) ? vatRate : 0);
           const inputVatFromSupplement = siteInvoiceSupplementVatCredit(s, {sh, idx});
           const availableRoom = Math.max(0, outputVat - inputVatFromSupplement);
           const delta = Math.min(theoreticalCredit, availableRoom);
@@ -9052,10 +9089,14 @@ function depreciationReserveBalance(){
 }
 /// VAT của RIÊNG 1 công trình (dùng cho màn tiền thực nhận của từng công trình). Số phải nộp của công ty
 /// tính theo sổ VAT công ty (companyVatLedger) — phần âm của công trình này được trừ vào công trình khác.
+/// Bản 2.0 (Ông Chủ xác nhận 18/11/2026: bán giá chưa VAT mà xuất hoá đơn thì khách TRẢ THÊM VAT):
+/// có VAT đầu ra khi giá bán đã gồm VAT HOẶC đã tick "Đã xuất hoá đơn bán" — khớp đúng số khách trả
+/// (commercialCashFromCustomer) và công nợ khách (siteBilledAmount).
+function commercialSellVatApplies(s){ return !!(s && (s.sellIncludesVat || s.sellHasInvoice)); }
 function commercialVatPayable(s){
   if(s.siteType!=='commercial') return 0;
   const vat = siteVatRateFraction(s);
-  const outputVat = commercialNetSell(s) * (s.sellIncludesVat ? vat : 0);
+  const outputVat = commercialNetSell(s) * (commercialSellVatApplies(s) ? vat : 0);
   // SỬA 2026-08-27 (cùng đợt sửa commercialCashToSupplier — VAT ĐẦU VÀO
   // được khấu trừ cũng CHỈ đúng % hoá đơn mỏ thực xuất, không phải 100%,
   // vì mỏ chỉ thực THU VAT cho đúng % đó — khấu trừ quá số VAT thật đã
@@ -9161,6 +9202,8 @@ function siteWageTiers(s){
 //    (giống hệt cách đếm chuyến siteTripCount).
 //  - Chở Cước: mảng s.freightTripWages, 1 ô / chuyến theo ô "Số chuyến".
 function siteIsManualWage(s){ return !!(s && s.wageManual); }
+const _fwageTouched = new WeakMap(); // ô lương chuyến Ông Chủ đã tự gõ trong lần sửa này (chỉ trong bộ nhớ, không lưu)
+function fwageTouchedOf(s){ let t = _fwageTouched.get(s); if(!t){ t = new Set(); _fwageTouched.set(s, t); } return t; }
 function freightManualSlotCount(s){ const n = Math.ceil(Number(s && s.trips)||0); return n>0 ? Math.min(n, 200) : 0; }
 function siteTripWageAt(s, tIdx, t){
   if(siteIsManualWage(s)){
@@ -9371,7 +9414,7 @@ function shiftFuelEndPending(sh){
   return sh.status==='active' && !(Number(sh.fuelEnd)>0) && ((Number(sh.fuelStart)||0)+(Number(sh.fuelAdded)||0))>0;
 }
 function shiftFuelConsumed(sh){
-  if(shiftFuelEndPending(sh)) return Math.max(0, Number(sh.fuelAdded)||0);
+  if(shiftFuelEndPending(sh)) return 0; // Bản 2.0 (Ông Chủ duyệt): chưa nhập dầu cuối ca → tạm tính 0 ở mọi trang
   return Math.max(0, ((Number(sh.fuelStart)||0)+(Number(sh.fuelAdded)||0)) - (Number(sh.fuelEnd)||0));
 }
 function shiftFuelCost(sh){ return shiftFuelConsumed(sh) * (Number(sh.fuelUnitPrice)||0); }
@@ -10094,6 +10137,12 @@ function renderShiftList(){
           <button class="btn btn-ghost btn-sm" id="missingPickupDateDetailBtn" style="flex:none; white-space:nowrap; margin-top:0;">Chi Tiết →</button>
         </div>
       ` : ''}
+      ${warnings.idleTrips && warnings.idleTrips.length>0 ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; padding:10px 12px; background:var(--loss-soft); border-radius:12px;">
+          <span style="font-weight:700; font-size:13.5px; color:var(--loss);">⛔ Ca Nghỉ Nhưng Có Chuyến (${warnings.idleTrips.length})</span>
+          <button class="btn btn-ghost btn-sm" id="idleTripDetailBtn" style="flex:none; white-space:nowrap; margin-top:0;">Chi Tiết →</button>
+        </div>
+      ` : ''}
       <button class="link-btn" id="warningsGoToSettingsBtn" style="margin-top:6px;">Quản lý giấy tờ / bảo dưỡng →</button>
     </div>`;
 
@@ -10252,6 +10301,8 @@ function bindWarningsBanner(){
   if(invBtn) invBtn.addEventListener('click', openInvoiceWarningsDetail);
   const pickupBtn = document.getElementById('missingPickupDateDetailBtn');
   if(pickupBtn) pickupBtn.addEventListener('click', openMissingPickupDateDetail);
+  const idleBtn = document.getElementById('idleTripDetailBtn');
+  if(idleBtn) idleBtn.addEventListener('click', openIdleShiftTripDetail);
   const btn = document.getElementById('warningsGoToSettingsBtn');
   if(btn) btn.addEventListener('click', ()=>{ state.currentTab='settings'; renderAll(); });
   document.querySelectorAll('.loanPaidBtn').forEach(loanBtn=>{
@@ -10632,7 +10683,7 @@ function renderShiftForm(){
       </div>
     </section>
 
-    <section class="group">
+    <section class="group" id="siteSection" style="${sh.status!=='active' && !(sh.siteLogs||[]).length ? 'display:none;' : ''}">
       <h3>🏗️ Công Trình Trong Ca</h3>
       <div id="siteRowsWrap"></div>
       <button class="btn btn-ghost btn-block" id="addSiteBtn">+ Thêm Công Trình</button>
@@ -10903,7 +10954,7 @@ ${siteIsManualWage(s) ? `<div class="field">
         </div>
         ${freightManualSlotCount(s)>0 ? `
         <div class="field" style="margin-bottom:0;">
-          <label>💰 Lương từng chuyến (đ) — chuyến mới tự điền giống chuyến trước, sửa nếu khác</label>
+          <label>💰 Lương từng chuyến (đ) — gõ chuyến 1, các chuyến sau tự điền theo; chuyến nào khác thì sửa riêng</label>
           <div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px;">
             ${Array.from({length:freightManualSlotCount(s)}, (_,k)=>`<div><div class="hint" style="margin:0 0 2px;">Chuyến ${k+1}</div><input type="text" inputmode="decimal" class="fwage-money" data-idx="${i}" data-k="${k}" placeholder="0" value="${(s.freightTripWages||[])[k]?toIntSafe(s.freightTripWages[k]).toLocaleString('vi-VN'):''}"></div>`).join('')}
           </div>
@@ -11001,7 +11052,18 @@ function bindSiteRowEvents(){
       const num = digits==='' ? 0 : parseInt(digits,10);
       inp.value = digits==='' ? '' : num.toLocaleString('vi-VN');
       if(!Array.isArray(s.freightTripWages)) s.freightTripWages = [];
+      const oldVal = Number(s.freightTripWages[k])||0;
       s.freightTripWages[k] = num;
+      // Bản 2.0 — tự điền các chuyến SAU chưa được Ông Chủ sửa tay (đang trống hoặc đang giống số cũ của ô này).
+      const touched = fwageTouchedOf(s); touched.add(k);
+      const n = freightManualSlotCount(s);
+      for(let j=k+1;j<n;j++){
+        const cur = Number(s.freightTripWages[j])||0;
+        if(touched.has(j) || !(cur===0 || cur===oldVal)) continue;
+        s.freightTripWages[j] = num;
+        const other = wrap.querySelector(`.fwage-money[data-idx="${idx}"][data-k="${j}"]`);
+        if(other) other.value = num ? num.toLocaleString('vi-VN') : '';
+      }
       updateSiteCalc(idx); updateSummary();
     });
   });
@@ -11283,7 +11345,7 @@ function renderSiteCashFlowExplainerModal(s){
   const cashOutputVat = commercialCashOutputVat(s); // VAT THẬT nằm trong tiền khách đã trả
 
   // Y HỆT logic nội bộ commercialVatPayable() — xem hàm đó để đối chiếu.
-  const outputVatForPayable = netSell * (s.sellIncludesVat ? vatFrac : 0);
+  const outputVatForPayable = netSell * (commercialSellVatApplies(s) ? vatFrac : 0);
   const inputVatCreditFromBuy = deductibleBuy ? (netBuy * (siteInvoicedBuyPercent(s)/100) * vatFrac) : 0;
   const supplementVatCredit = siteInvoiceSupplementVatCredit(s);
   const vatBeforeClamp = outputVatForPayable - inputVatCreditFromBuy - supplementVatCredit;
@@ -11355,7 +11417,7 @@ Khách trả = ${s.sellIncludesVat
     <div class="modal-step">
       <div class="st-title">Bước 6 — VAT phải nộp nhà nước cuối tháng</div>
       <div class="st-body">= VAT đầu ra − VAT đầu vào được khấu trừ (chỉ tính khi đã tick "Đã nhận hoá đơn mua") − VAT khấu trừ từ các lô Kho Hoá Đơn Bù đã rút cho ca này. Đây là nghĩa vụ thuế — khác với số VAT thật nằm trong tiền mặt ở Bước 5.</div>
-      <div class="st-formula">VAT đầu ra = Net Bán × ${s.sellIncludesVat?`${vatPct}%`:'0% (giá bán chưa VAT)'} = ${fmtVND(outputVatForPayable)}
+      <div class="st-formula">VAT đầu ra = Net Bán × ${commercialSellVatApplies(s)?`${vatPct}%`:'0% (giá bán chưa VAT, chưa xuất hoá đơn)'} = ${fmtVND(outputVatForPayable)}
 VAT đầu vào được khấu trừ = ${deductibleBuy?`Net Mua × ${rInv.val}% (mỏ chỉ xuất hoá đơn đúng ${rInv.val}% khối lượng) × ${vatPct}% = ${fmtVND(inputVatCreditFromBuy)}`:'0đ (chưa có hoá đơn mua)'}
 VAT khấu trừ từ Kho Hoá Đơn Bù (đắp đúng phần ${100-rInv.val}% mỏ không xuất hoá đơn) = ${fmtVND(supplementVatCredit)}
 VAT phải nộp = ${fmtVND(outputVatForPayable)} − ${fmtVND(inputVatCreditFromBuy)} − ${fmtVND(supplementVatCredit)} = ${fmtVND(vatBeforeClamp)}${vatBeforeClamp<0?`
@@ -11465,7 +11527,7 @@ function periodVatBreakdown(inRangeShifts){
     for(const s of (sh.siteLogs||[])){
       if(s.siteType!=='commercial') continue;
       const vatFrac = siteVatRateFraction(s);
-      const outputVat = commercialNetSell(s) * (s.sellIncludesVat ? vatFrac : 0);
+      const outputVat = commercialNetSell(s) * (commercialSellVatApplies(s) ? vatFrac : 0);
       const inputVat = buyIsDeductible(s) ? (commercialNetBuy(s) * (siteInvoicedBuyPercent(s)/100) * vatFrac) : 0;
       const supplementCredit = siteInvoiceSupplementVatCredit(s);
       const payable = commercialVatPayable(s); // hàm gốc — đã tự kẹp về 0 nếu âm
@@ -11626,7 +11688,7 @@ function updateSummary(){
   const kmDrivenInput=document.getElementById('f_kmDriven');
   if(kmDrivenInput && document.activeElement!==kmDrivenInput) kmDrivenInput.value = blankIfZero(shiftOdoDriven(sh));
   const fuelHint=document.getElementById('fuelHint');
-  if(fuelHint) fuelHint.innerHTML = `<span class="ic">⛽</span><span class="lbl">${shiftFuelEndPending(sh)?'Dầu tiêu hao tạm tính (= dầu đổ thêm, chưa nhập dầu cuối ca)':'Dầu tiêu hao'}&nbsp;</span><span class="val">${shiftFuelConsumed(sh).toLocaleString('vi-VN')} lít · ${fmtVND(shiftFuelCost(sh))}</span>`;
+  if(fuelHint) fuelHint.innerHTML = `<span class="ic">⛽</span><span class="lbl">${shiftFuelEndPending(sh)?'Dầu tiêu hao tạm tính = 0 (chưa nhập dầu cuối ca)':'Dầu tiêu hao'}&nbsp;</span><span class="val">${shiftFuelConsumed(sh).toLocaleString('vi-VN')} lít · ${fmtVND(shiftFuelCost(sh))}</span>`;
 }
 
 function bindFormEvents(){
@@ -11656,7 +11718,19 @@ function bindFormEvents(){
   });
 
   document.getElementById('f_status').addEventListener('change', e=>{
-    sh.status = e.target.value; reapplyCostPolicyToDraft(); refreshFixedCostInputs(); updateSummary();
+    const next = e.target.value;
+    // Bản 2.0 — ca nghỉ (mưa, phép, lễ, bảo trì, nằm bãi) không chạy chuyến: nếu ca đang có công trình thì hỏi xoá,
+    // tránh lãi lỗ tính lương chuyến mà lương nợ tài xế lại không tính (2 nơi lệch nhau).
+    if(next!=='active' && (sh.siteLogs||[]).length>0){
+      const label = (STATUS_OPTIONS.find(o=>o.key===next)||{}).label || next;
+      if(!confirm(`Ca "${label}" không chạy chuyến. Xoá ${sh.siteLogs.length} công trình đã nhập trong ca này, thưa Ông Chủ?`)){
+        e.target.value = sh.status; return;
+      }
+      sh.siteLogs = []; renderSiteRows();
+    }
+    sh.status = next; reapplyCostPolicyToDraft(); refreshFixedCostInputs(); updateSummary();
+    const sec = document.getElementById('siteSection');
+    if(sec) sec.style.display = (sh.status!=='active' && !(sh.siteLogs||[]).length) ? 'none' : '';
   });
   document.querySelectorAll('#f_intensityToggle button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -11781,6 +11855,10 @@ async function afterSavePastMonthShift(sh){
   }
 }
 async function saveDraftShift(){
+  { const _d = state.draftShift;
+    if(_d && _d.status!=='active' && (_d.siteLogs||[]).length>0){
+      showToast(`Ca nghỉ đang có ${_d.siteLogs.length} công trình — Ông Chủ xoá công trình hoặc đổi trạng thái về "Hoạt Động" rồi lưu lại.`); return;
+    } }
   const sh = state.draftShift;
   if(!sh.driverId){ showToast('Hãy chọn tài xế trước khi lưu.'); return; }
   // Guard against the exact class of bug that silently understates the fleet's
@@ -14608,7 +14686,7 @@ function appraisalFleetShifts(){
   return excluded.size===0 ? all : all.filter(sh=>!excluded.has(sh.id));
 }
 function historicalAvgFuelPerKm(){
-  const shifts = appraisalFleetShifts();
+  const shifts = appraisalFleetShifts().filter(sh=>!shiftFuelEndPending(sh));
   const totalKm = shifts.reduce((s,sh)=>s+shiftOdoDriven(sh),0);
   const totalFuel = shifts.reduce((s,sh)=>s+shiftFuelConsumed(sh),0);
   return totalKm>0 ? totalFuel/totalKm : 0;
@@ -22407,6 +22485,11 @@ function renderCompanyDashboardPage(preserveScroll){
           <button class="btn btn-accent" id="addInternalTransferBtn" style="flex:1;">🔄➕ Ghi Nhận</button>
           <button class="btn btn-ghost" id="internalTransferHistoryBtn" style="flex:1;">📋 Chi Tiết</button>
         </div>
+        <div style="font-weight:800; font-size:13px; margin-top:16px; margin-bottom:8px; text-align:center;">💰 Góp / Rút Vốn Chủ (Tiền Ông Chủ bỏ vào / lấy ra)</div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-accent" id="addOwnerCapitalBtn" style="flex:1;">💰➕ Ghi Nhận</button>
+          <button class="btn btn-ghost" id="ownerCapitalHistoryBtn" style="flex:1;">📋 Chi Tiết</button>
+        </div>
         <div class="sx-removed" style="font-weight:800; font-size:13px; margin-top:16px; margin-bottom:8px; text-align:center;">🫙 Chuyển Tiền — Chứa Tiền Khấu Hao Xe</div>
         <div class="sx-removed" style="display:flex; justify-content:center;">
           <button class="btn btn-accent" id="addDepReserveTransferBtn" style="flex:0 1 calc(50% - 5px);">🫙➕ Ghi Nhận</button>
@@ -23081,6 +23164,10 @@ function renderCompanyDashboardPage(preserveScroll){
   document.getElementById('equityHistoryDetailBtn').addEventListener('click', ()=>{ saveMainScroll(); renderEquityHistoryDetailPage(); });
   document.getElementById('addInternalTransferBtn').addEventListener('click', openInternalTransferModal);
   document.getElementById('internalTransferHistoryBtn').addEventListener('click', ()=>{ saveMainScroll(); renderInternalTransferHistoryPage(); });
+  const addOwnerCapitalBtn = document.getElementById('addOwnerCapitalBtn');
+  if(addOwnerCapitalBtn) addOwnerCapitalBtn.addEventListener('click', ()=>openOwnerCapitalModal(null));
+  const ownerCapitalHistoryBtn = document.getElementById('ownerCapitalHistoryBtn');
+  if(ownerCapitalHistoryBtn) ownerCapitalHistoryBtn.addEventListener('click', ()=>{ saveMainScroll(); renderEquityHistoryDetailPage(); });
   const addDepReserveTransferBtn = document.getElementById('addDepReserveTransferBtn');
   if(addDepReserveTransferBtn) addDepReserveTransferBtn.addEventListener('click', openDepreciationReserveTransferModal);
   renderRoadFeeMonthTable();
@@ -23415,6 +23502,48 @@ function renderCompanyCashFlowLedgerPage(){
 /// nút chi tiết, bảng kẻ ô"): trang riêng liệt kê TOÀN BỘ Lịch Sử Góp/Rút
 /// — trước đây hiện thẳng từng khoản ngay trên Linh Chí Thành (rất dài
 /// khi nhiều khoản), giờ chỉ còn 1 dòng tóm tắt + nút mở trang này.
+/// Bản 2.0 — form gọn ghi 1 khoản Góp vào / Rút ra của Ông Chủ (thay form cũ đã bỏ ở bản 1.3).
+/// Ghi vào đúng sổ ownerEquityEntries mà đối chiếu số dư TK Doanh Nghiệp / Tiền Mặt đang đọc.
+function openOwnerCapitalModal(id){
+  const existing = id ? state.ownerEquityEntries.find(e=>e.id===id) : null;
+  const d = existing ? { ...existing } : { date: todayLocalDateStr(), type:'contribution', amount:0, method:'bank', note:'' };
+  openModal(`
+    <h3>💰 ${existing?'Sửa':'Ghi'} Khoản Góp / Rút Vốn</h3>
+    <div class="field"><label>Ngày</label><input type="date" id="oc_date" value="${d.date}"></div>
+    <div class="field"><label>Loại</label>
+      <select id="oc_type"><option value="contribution" ${d.type==='contribution'?'selected':''}>⬆️ Góp vào (tiền Ông Chủ bỏ vào công ty)</option>
+      <option value="withdrawal" ${d.type==='withdrawal'?'selected':''}>⬇️ Rút ra (Ông Chủ lấy tiền ra)</option></select></div>
+    <div class="field"><label>Số tiền</label><input type="text" inputmode="decimal" id="oc_amount"></div>
+    <div class="field"><label>Vào / ra từ đâu</label>
+      <select id="oc_method"><option value="bank" ${(d.method||'bank')!=='cash'?'selected':''}>🏦 TK Doanh Nghiệp</option>
+      <option value="cash" ${d.method==='cash'?'selected':''}>💵 Tiền Mặt</option></select></div>
+    <div class="field" style="margin-bottom:0;"><label>Ghi chú</label><input type="text" id="oc_note" value="${escapeHtml(d.note||'')}" placeholder="Không bắt buộc"></div>
+    <div style="display:flex; gap:10px; margin-top:12px;">
+      ${existing ? '<button class="btn btn-danger" id="oc_del">Xoá</button>' : ''}
+      <button class="btn btn-accent btn-block" id="oc_save">Lưu</button>
+    </div>`);
+  let amount = Number(d.amount)||0;
+  attachMoneyInput(document.getElementById('oc_amount'), amount, v=>amount=v);
+  document.getElementById('oc_save').addEventListener('click', async ()=>{
+    if(!(amount>0)){ showToast('Ông Chủ nhập số tiền trước đã.'); return; }
+    const next = { ...d, date: document.getElementById('oc_date').value || d.date, type: document.getElementById('oc_type').value,
+      amount, method: document.getElementById('oc_method').value, note: document.getElementById('oc_note').value.trim() };
+    const prev = [...state.ownerEquityEntries];
+    if(existing) state.ownerEquityEntries = state.ownerEquityEntries.map(e=>e.id===existing.id ? next : e);
+    else state.ownerEquityEntries.push({ id: uid('equity'), isCharterCapital:false, isRecycled:false, ...next });
+    if(!(await saveOwnerEquityEntries())){ state.ownerEquityEntries = prev; return; }
+    closeModal(); showToast('Đã lưu, thưa Ông Chủ.');
+    if(document.getElementById('equityHistoryBackBtn')) renderEquityHistoryDetailPage(); else { saveMainScroll(); renderCompanyDashboardPage(true); restoreMainScroll(); }
+  });
+  const del = document.getElementById('oc_del');
+  if(del) del.addEventListener('click', async ()=>{
+    if(!confirm('Xoá khoản góp/rút này, thưa Ông Chủ?')) return;
+    const prev = [...state.ownerEquityEntries];
+    state.ownerEquityEntries = state.ownerEquityEntries.filter(e=>e.id!==existing.id);
+    if(!(await saveOwnerEquityEntries())){ state.ownerEquityEntries = prev; return; }
+    closeModal(); showToast('Đã xoá.'); renderEquityHistoryDetailPage();
+  });
+}
 function renderEquityHistoryDetailPage(){
   scrollMainToTop();
   const app = document.getElementById('app');
@@ -23426,6 +23555,7 @@ function renderEquityHistoryDetailPage(){
     <section class="group">
       <h2 style="margin-bottom:2px;">📜 Chi Tiết Lịch Sử Góp/Rút</h2>
       <div class="hint" style="margin-top:0; margin-bottom:12px;">${sorted.length} khoản, mới nhất lên đầu.</div>
+      <button class="btn btn-accent btn-block" id="equityHistoryAddBtn" style="margin-bottom:12px;">💰➕ Ghi Khoản Góp / Rút</button>
       <div class="grid-table-wrap">
         <table class="grid-table">
           <thead><tr><th>Ngày</th><th>Loại</th><th>Phương Thức</th><th>Nhãn</th><th class="num">Số Tiền</th><th></th></tr></thead>
@@ -23442,6 +23572,7 @@ function renderEquityHistoryDetailPage(){
                 </td>
                 <td class="num" style="font-weight:800; color:${e.type==='contribution'?'var(--profit)':'var(--loss)'};">${e.type==='contribution'?'+':'−'}${fmtVND(e.amount)}</td>
                 <td style="white-space:nowrap;">
+                  <button class="link-btn" data-edit-equity="${e.id}" style="padding:0; font-size:12px; display:block; margin-bottom:4px;">✏️ Sửa</button>
                   <button class="link-btn" data-toggle-recycled="${e.id}" style="padding:0; font-size:12px; display:block;">${e.isRecycled?'↩️ Bỏ đảo':'🔄 Đánh dấu đảo'}</button>
                   <button class="link-btn" data-del-equity="${e.id}" style="color:var(--loss); padding:0; display:block; margin-top:4px;">Xoá</button>
                 </td>
@@ -23452,8 +23583,11 @@ function renderEquityHistoryDetailPage(){
     </section>
   `;
   document.getElementById('equityHistoryBackBtn').addEventListener('click', ()=>{ renderCompanyDashboardPage(true); restoreMainScroll(); });
+  document.getElementById('equityHistoryAddBtn').addEventListener('click', ()=>openOwnerCapitalModal(null));
+  document.querySelectorAll('[data-edit-equity]').forEach(btn=>btn.addEventListener('click', ()=>openOwnerCapitalModal(btn.dataset.editEquity)));
   document.querySelectorAll('[data-del-equity]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
+      if(!confirm('Xoá khoản góp/rút này, thưa Ông Chủ?')) return;
       state.ownerEquityEntries = state.ownerEquityEntries.filter(e=>e.id!==btn.dataset.delEquity);
       if(!(await saveOwnerEquityEntries())) return;
       showToast('Đã xoá.');
