@@ -822,7 +822,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.4 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.5 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -3103,6 +3103,9 @@ function partnerStatementData(kind, id, from, to){
       siteRows.push({ sh, s, amount, date: sh.date });
       if(s.siteType==='commercial'){
         const gross = isSup ? commercialGrossBuy(s) : commercialGrossSell(s);
+        // 2.5 — tách đúng tiền hàng chưa VAT / VAT như Sổ Kế Toán (giá đã gồm VAT thì bóc VAT ra).
+        const gB = commercialGrossBuy(s), gS = commercialGrossSell(s), nB = commercialNetBuy(s), nS = commercialNetSell(s);
+        const net = isSup ? nB : nS;
         (s.commercialTrips||[]).forEach(t=>{
           const vol = Number(isSup ? t.buyVolume : t.sellVolume)||0;
           const price = Number(isSup ? t.buyUnitPrice : t.sellUnitPrice)||0;
@@ -3110,17 +3113,19 @@ function partnerStatementData(kind, id, from, to){
           const share = gross>0 ? lineGross/gross : 0;
           const buyLine = (Number(t.buyVolume)||0)*(Number(t.buyUnitPrice)||0);
           const sellLine = (Number(t.sellVolume)||0)*(Number(t.sellUnitPrice)||0);
+          const lineNet = net*share, lineTotal = amount*share;
           trips.push({ date: sh.date, shift: pxShiftLabel(sh), vehicle: vehicleNameById(sh._vehicleId)||'', driver: pxDriverName(sh), other: partnerOther,
-            goods: (isSup ? t.goodsType : (t.sellGoodsType||t.goodsType)) || '', vol, unit: isSup?'tấn':'khối', price, lineGross,
-            vat: (amount-gross)*share, total: amount*share,
+            goods: (isSup ? t.goodsType : (t.sellGoodsType||t.goodsType)) || '', vol, unit: isSup?'tấn':'khối', price, lineGross: lineNet,
+            vat: lineTotal - lineNet, total: lineTotal,
             invoiced: isSup ? (buyIsDeductible(s)?`Có HĐ ${siteInvoicedBuyPercent(s)}%`:'Chưa HĐ') : (s.sellHasInvoice?'Đã xuất HĐ':'Chưa xuất HĐ'),
-            buyLine, sellLine, margin: sellLine - buyLine });
+            buyLine: gB>0 ? nB*buyLine/gB : 0, sellLine: gS>0 ? nS*sellLine/gS : 0,
+            margin: (gS>0 ? nS*sellLine/gS : 0) - (gB>0 ? nB*buyLine/gB : 0) });
         });
       } else {
         const vol = (Number(s.volumePerTrip)||0)*(Number(s.trips)||0);
         trips.push({ date: sh.date, shift: pxShiftLabel(sh), vehicle: vehicleNameById(sh._vehicleId)||'', driver: pxDriverName(sh), other: partnerOther,
-          goods: `Cước vận chuyển (${Number(s.trips)||0} chuyến)`, vol, unit:'khối', price: Number(s.materialUnitPrice)||0, lineGross: amount, vat: 0, total: amount,
-          invoiced: '—', buyLine: 0, sellLine: amount, margin: null });
+          goods: `Cước vận chuyển (${Number(s.trips)||0} chuyến)`, vol, unit:'khối', price: Number(s.materialUnitPrice)||0, lineGross: siteRevenue(s), vat: amount - siteRevenue(s), total: amount,
+          invoiced: '—', buyLine: 0, sellLine: siteRevenue(s), margin: null });
       }
     });
   }
@@ -16812,7 +16817,7 @@ function lastActivityDateForSite(siteName){
 /// vỡ vụn do gõ tay lệch chính tả. Cũng LOẠI hẳn công trình đã quá 7 ngày
 /// không có ca nào chạy (coi như đã xong/ngừng chạy) — chỉ hiện công
 /// trình chở cước đang thật sự còn hoạt động, đúng yêu cầu Ông Chủ.
-function computeSiteRanking(inRangeShifts){
+function computeSiteRanking(inRangeShifts, includeAll){
   const bySite = {};
   for(const sh of inRangeShifts){
     for(const s of (sh.siteLogs||[])){
@@ -16826,6 +16831,7 @@ function computeSiteRanking(inRangeShifts){
   const todayStr = todayLocalDateStr();
   return Object.values(bySite)
     .filter(x=>{
+      if(includeAll) return true;
       const last = lastActivityDateForSite(x.name);
       const daysSince = last ? daysBetweenDates(new Date(last+'T00:00:00'), new Date(todayStr+'T00:00:00')) : null;
       return !(daysSince!==null && daysSince>7);
@@ -25243,7 +25249,7 @@ function autoFitColumns(ws, rows){
 /// Builds the flat "Nhật Ký Vận Hành" sheet: ALL shifts ever recorded (not
 /// filtered by period), one row per site within a shift, mirroring the
 /// original spreadsheet's column layout exactly.
-function buildOperationLogRows(){
+function buildOperationLogRows(shiftList){
   const header = ['Ngày','Ca','Cường Độ','Tài Xế','Trạng Thái','Odo Đầu','Odo Cuối','Odo Chạy (Km)',
     'Chỉ Số Dầu Đầu','Chỉ Số Dầu Cuối','Dầu Đổ Thêm (Lít)','Dầu Tiêu Hao (Lít)','Đơn Giá Dầu/Lít','Tiền Dầu Tiêu Hao',
     'Công Trình (Chở Cước)','Điểm Múc - Điểm Đổ (Thương Mại)','Loại Công Trình','Khối Lượng/Chuyến (Chở Cước)','Đơn Giá Vật Liệu/Cước','Tổng Mua (TM)','Tổng Bán (TM)','Số Chuyến','Thành Tiền / Lãi Gộp Công Trình',
@@ -25252,21 +25258,21 @@ function buildOperationLogRows(){
     'Tiền Luật Phát Sinh','Chi Phí Phát Sinh','Ghi Chú Phát Sinh','Ứng Lương/Đền Bù','Người Nhận Ứng','Ghi Chú Ca',
     'Tổng Chi Phí Ca','Lợi Nhuận Ròng Ca'];
   const rows = [header];
-  const sorted = [...state.shifts].sort((a,b)=>chronoKey(a.date,a.shiftType)-chronoKey(b.date,b.shiftType));
+  const sorted = [...(shiftList||state.shifts)].sort((a,b)=>chronoKey(a.date,a.shiftType)-chronoKey(b.date,b.shiftType));
   for(const sh of sorted){
     const driverName = driverById(sh.driverId)?.name || sh.driverNameSnapshot || '';
     const intensityLabel = (Number(sh.intensity)||1)===1.5 ? '1,5 ca' : '1 ca';
     const shared = [formatDateVN(sh.date), shiftTypeLabel(sh.shiftType), intensityLabel, driverName, statusLabel(sh.status),
-      sh.odoStart||0, sh.odoEnd||0, shiftOdoDriven(sh), sh.fuelStart||0, sh.fuelEnd||0, sh.fuelAdded||0, shiftFuelConsumed(sh),
+      sh.odoStart||0, (Number(sh.odoEnd)||0)>0 ? Number(sh.odoEnd) : '', shiftOdoDriven(sh), sh.fuelStart||0, shiftFuelEndPending(sh) ? '' : (Number(sh.fuelEnd)||0), sh.fuelAdded||0, shiftFuelConsumed(sh),
       sh.fuelUnitPrice||0, shiftFuelCost(sh)];
     // SỬA 2026-08-31: bỏ cột "Tiền Nhà+Điện Nước" — không còn gắn theo
     // ca nữa (xem "Kết Quả Kinh Doanh" sheet, đã cộng CHUNG CÔNG TY theo
     // tháng ở đó thay vì lặp lại trên từng dòng ca ở đây).
-    const trailing = [shiftTotalRevenue(sh), sh.baseSalaryAllocation||0, sh.foodAllowance||0,
+    const trailing = [Math.round(shiftTotalRevenue(sh)), sh.baseSalaryAllocation||0, sh.foodAllowance||0,
       sh.roadFeeIncidental||0, sh.incidentalCost||0, sh.incidentalNotes||'', sh.advanceAmount||0, sh.advanceRecipientName||'',
-      sh.notes||'', shiftTotalCost(sh), shiftNetProfit(sh)];
+      sh.notes||'', Math.round(shiftTotalCost(sh)), Math.round(shiftNetProfit(sh))];
     if((sh.siteLogs||[]).length===0){
-      rows.push([...shared, '','','','','','','','','','','','','', ...trailing]);
+      rows.push([...shared, '','','','','','','','','','','','','','', ...trailing]); // 2.5 — đủ 14 ô trống cho khớp cột
     } else {
       for(const s of sh.siteLogs){
         const isC = s.siteType==='commercial';
@@ -25363,10 +25369,10 @@ function buildResultsRows({from, to, gDay, gNight, gTotal, repairTotal, roadFee,
   out.push(['= LÃI GỘP MUA-BÁN', R(gTotal.takeHomeTotal)]);
   out.push(['− Chi phí vận hành (dầu, lương, ăn, phát sinh, sửa chữa, luật đường, nhà, điện nước, cầu đường)', R(gTotal.operatingCashCost + repairTotal + roadFee + houseRent + utilities + toll)]);
   out.push(['= Lợi nhuận gộp vận hành', R(grossOp)]);
-  out.push(['− Khấu hao xe (trong kỳ, từ ca đầu tiên của xe)', R(fb.depreciation)]);
+  if(FEATURE_DEPRECIATION_LOANS || Math.abs(Number(fb.depreciation)||0)>0.5) out.push(['− Khấu hao xe (trong kỳ, từ ca đầu tiên của xe)', R(fb.depreciation)]);
   const loanRows = Array.isArray(P.loanRows) ? P.loanRows : [];
   if(loanRows.length) loanRows.forEach(r=>out.push([`− Lãi vay ngân hàng — ${r.label}`, R(r.interest)]));
-  else out.push(['− Lãi vay ngân hàng (chỉ phần lãi)', R(fb.loanInterest)]);
+  else if(FEATURE_DEPRECIATION_LOANS || Math.abs(Number(fb.loanInterest)||0)>0.5) out.push(['− Lãi vay ngân hàng (chỉ phần lãi)', R(fb.loanInterest)]);
   out.push(['− Bảo hiểm xe (trong kỳ)', R(fb.insurance)]);
   if((Number(fb.rentalTax)||0)>0) out.push(['− Thuế trên tiền thuê xe (xe cá nhân)', R(fb.rentalTax)]);
   out.push(['− Đăng kiểm/Đăng ký/Phù hiệu vận tải (trong kỳ)', R(fb.registration)]);
@@ -25382,7 +25388,7 @@ function buildResultsRows({from, to, gDay, gNight, gTotal, repairTotal, roadFee,
   out.push([]);
   out.push(['Ước tính thuế TNDN (đối chiếu với kế toán)','Số Tiền']);
   out.push(['Lợi nhuận thực tế (trước thuế TNDN)', R(finalNetProfit)]);
-  out.push(['+ Chi phí không được trừ (xe cá nhân: khấu hao, bảo hiểm, đăng kiểm, thuế tiền thuê; lãi vay cá nhân)', R(P.nonDeductible)]);
+  out.push(['+ Chi phí không được trừ (xe cá nhân: bảo hiểm, đăng kiểm, thuế tiền thuê)', R(P.nonDeductible)]);
   out.push(['− Tiền thuê xe được trừ (theo hợp đồng)', R(P.rentDeductible)]);
   out.push(['= Lợi nhuận tính thuế (ước tính)', R(P.taxableEstimate)]);
   out.push([`− Thuế TNDN ${P.manualCit?'(số nhập tay)':`(ước tính ${Number(P.citRate)||0}%)`}`, R(P.cit)]);
@@ -25397,7 +25403,7 @@ function buildResultsRows({from, to, gDay, gNight, gTotal, repairTotal, roadFee,
   out.push([]);
   out.push(['XẾP HẠNG CÔNG TRÌNH THEO DOANH THU/CHUYẾN']);
   out.push(['Công Trình / Điểm Múc-Điểm Đổ','Doanh Thu','Số Chuyến','Doanh Thu/Chuyến']);
-  siteRanking.forEach(s => { out.push([s.name, Math.round(s.revenue), s.trips, Math.round(s.revenuePerTrip)]); });
+  (()=>{ const ex = getRevenueExcludedShiftIds(); return computeSiteRanking((state.shifts||[]).filter(sh=>sh.date>=from && sh.date<=to && !ex.has(sh.id)).map(sanitizeShiftForRevenue), true); })().forEach(s => { out.push([s.name, Math.round(s.revenue), s.trips, Math.round(s.revenuePerTrip)]); });
   return out;
 }
 
@@ -25459,10 +25465,14 @@ function buildInvoiceLotDrawdownRows(){
 /// Hỏng Hóc" trên phiếu lương từng tài xế, chỉ trình bày dạng bảng phẳng
 /// để đối chiếu nhanh trong file Excel tổng hợp. KHÔNG tính toán gì mới —
 /// dùng đúng repairDriverResponsibleAmount() đã kiểm chứng.
-function buildRepairRows(from, to){
+function buildRepairRows(from, to, companyWide){
   const header = ['Ngày','Hạng Mục','Mã Hoá Đơn','Số Tiền','Trách Nhiệm','Tài Xế Chịu Trách Nhiệm','Số Tiền Tài Xế Chịu','Ghi Chú'];
+  if(companyWide) header.push('Xe');
   const rows = [header];
-  const inRange = repairsInRange(from, to).sort((a,b)=>a.date.localeCompare(b.date));
+  const act = activeVehicleIdForEditing();
+  const inRange = (companyWide
+    ? Object.entries(state.allVehiclesRepairs||{}).flatMap(([vid,list])=>(vid===act ? (state.repairs||[]) : (list||[])).filter(r=>r.date>=from && r.date<=to).map(r=>Object.assign({}, r, { _vehicleId: vid })))
+    : repairsInRange(from, to)).sort((a,b)=>a.date.localeCompare(b.date));
   for(const r of inRange){
     const resp = r.responsibility || 'owner_full';
     const respDriver = resp!=='owner_full' ? driverById(r.responsibleDriverId) : null;
@@ -25475,9 +25485,9 @@ function buildRepairRows(from, to){
       respDriver?.name||'',
       Math.round(repairDriverResponsibleAmount(r)),
       r.notes||''
-    ]);
+    ].concat(companyWide ? [vehicleNameById(r._vehicleId)||''] : []));
   }
-  if(rows.length===1) rows.push(['(Không có khoản sửa chữa/khấu hao nào trong kỳ này)','','','','','','','']);
+  if(rows.length===1) rows.push(['(Không có khoản sửa chữa nào trong kỳ này)','','','','','','','']);
   return rows;
 }
 
@@ -25901,9 +25911,11 @@ function ktBuildTongQuan(wb, S, companyName, mst){
     setH(tall ? 38 : 24);
   };
   ws.mergeCells(`A${r}:B${r}`); ktCell(ws,`A${r}`,'KẾT QUẢ KINH DOANH',{bold:true,fill:KT_HEAD_FILL}); setH(26);
-  line('Doanh thu', S.gTotal.revenue);
-  line('Giá vốn + chi phí vận hành', S.gTotal.opCost);
-  line('LỢI NHUẬN THỰC TẾ', S.finalNetProfit, {bold:true, color:S.finalNetProfit>=0?'FF1F7A4D':'FFB23A2E'});
+  // 2.5 — toàn công ty (mọi xe + chi phí chung), 3 dòng cộng trừ khớp nhau.
+  const CO = S.ktCompany || { revenue: S.gTotal.revenue, profit: S.finalNetProfit };
+  line('Doanh thu (toàn công ty)', CO.revenue);
+  line('Tổng chi phí (giá vốn, vận hành, sửa chữa, luật đường, cầu đường, nhà, bảo hiểm, đăng kiểm…)', CO.revenue - CO.profit);
+  line('LỢI NHUẬN THỰC TẾ', CO.profit, {bold:true, color:CO.profit>=0?'FF1F7A4D':'FFB23A2E'});
   setH(10);
   ws.mergeCells(`A${r}:B${r}`); ktCell(ws,`A${r}`,'NGHĨA VỤ THUẾ',{bold:true,fill:KT_HEAD_FILL}); setH(26);
   line('VAT phải nộp trong kỳ (bắt buộc)', S.vatPayableInRange, {color:'FFB23A2E'});
@@ -25990,9 +26002,9 @@ function ktBuildBangKe(wb, taxData, from, to){
 }
 function ktBuildNhatKy(wb, inRangeShifts){
   const ws = wb.addWorksheet('Nhat Ky Van Hanh');
-  ws.columns = [{width:13},{width:9},{width:18},{width:26},{width:26},{width:9},{width:16},{width:18},{width:18},{width:20}];
-  ktHeaderRow(ws,1,['Ngày','Ca','Tài Xế','Công Trình (Chở Cước)','Điểm Múc - Điểm Đổ (Thương Mại)','Số Chuyến','Doanh Thu','Tổng Chi Phí','Lợi Nhuận Ròng','Ghi Chú']);
-  let r=2;
+  ws.columns = [{width:13},{width:9},{width:18},{width:26},{width:26},{width:9},{width:16},{width:18},{width:18},{width:20},{width:14}];
+  ktHeaderRow(ws,1,['Ngày','Ca','Tài Xế','Công Trình (Chở Cước)','Điểm Múc - Điểm Đổ (Thương Mại)','Số Chuyến','Doanh Thu','Chi Phí Ca','Lãi Ca','Ghi Chú','Xe']);
+  let r=2; let tRev=0, tCost=0, tTrips=0;
   const sorted = [...inRangeShifts].sort((a,b)=>chronoKey(a.date,a.shiftType)-chronoKey(b.date,b.shiftType));
   sorted.forEach(sh=>{
     const driverName = driverById(sh.driverId)?.name || sh.driverNameSnapshot || '';
@@ -26009,8 +26021,17 @@ function ktBuildNhatKy(wb, inRangeShifts){
     ktCell(ws,`H${r}`,Math.round(shiftTotalCost(sh)),{align:'right',numFmt:KT_NUMFMT});
     ktCell(ws,`I${r}`,Math.round(shiftNetProfit(sh)),{align:'right',numFmt:KT_NUMFMT});
     ktCell(ws,`J${r}`,sh.notes||'');
+    ktCell(ws,`K${r}`,vehicleNameById(sh._vehicleId)||'');
+    tRev += shiftTotalRevenue(sh); tCost += shiftTotalCost(sh); tTrips += trips;
     ws.getRow(r).height=22; r++;
   });
+  if(sorted.length){
+    ktCell(ws,`A${r}`,'TỔNG',{bold:true}); ktCell(ws,`F${r}`,tTrips,{align:'right',bold:true});
+    ktCell(ws,`G${r}`,Math.round(tRev),{align:'right',numFmt:KT_NUMFMT,bold:true});
+    ktCell(ws,`H${r}`,Math.round(tCost),{align:'right',numFmt:KT_NUMFMT,bold:true});
+    ktCell(ws,`I${r}`,Math.round(tRev-tCost),{align:'right',numFmt:KT_NUMFMT,bold:true});
+    ws.getRow(r).height=22; r++;
+  }
 }
 function ktBuildSoTien(wb, sheetName, headerLabel, records, nameResolver){
   const ws = wb.addWorksheet(sheetName);
@@ -26208,6 +26229,10 @@ async function exportKTThueBundle(from, to){
 
   const wb = new ExcelJS.Workbook();
   const S = computePeriodSummary(from, to);
+  const coAcc = computeCumulativeAccrualProfit(to, from);
+  S.ktCompany = { revenue: Number(coAcc.totalRevenue)||0, profit: Number(coAcc.netProfit)||0 };
+  const coExcluded = getRevenueExcludedShiftIds();
+  const coShifts = shiftsCompanyWideSafe().filter(sh=>sh.date>=from && sh.date<=to && !coExcluded.has(sh.id)).map(sanitizeShiftForRevenue);
   const companyName = companyProfileFilled() ? companyFull().toUpperCase() : ((taxData&&taxData.cfg&&taxData.cfg.tenCty) || companyFull().toUpperCase());
   const mst = companyProfile().taxCode || (taxData&&taxData.cfg&&taxData.cfg.mst) || '';
 
@@ -26215,7 +26240,7 @@ async function exportKTThueBundle(from, to){
   ktBuildHoaDonRa(wb, taxData, from, to);
   ktBuildChungTu(wb, taxData, from, to);
   ktBuildBangKe(wb, taxData, from, to);
-  ktBuildNhatKy(wb, S.inRange);
+  ktBuildNhatKy(wb, coShifts);
   ktBuildSupplierDetail(wb, from, to);
   ktBuildCustomerDetail(wb, from, to);
   ktBuildSoTien(wb, 'So Tien Khach Bank Vao', 'Khách Hàng',
@@ -26230,7 +26255,8 @@ async function exportKTThueBundle(from, to){
   const blob = new Blob([buf], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = `KTThue_LinhChiThanh_${from}_den_${to}.xlsx`;
+  const coSlug = (companyShort ? companyShort() : companyFull()).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/Đ/g,'D').replace(/[^A-Za-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'CongTy';
+  a.href = url; a.download = `KTThue_${coSlug}_${from}_den_${to}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(()=>URL.revokeObjectURL(url), 1500);
   showToast('Đã xuất file trọn gói cho KT thuế — 10 sheet đầy đủ.');
@@ -26468,11 +26494,25 @@ async function exportDriverPayslipXLSX(driverId){
 function downloadWorkbook(from, to, resultsData, filenamePrefix){
   const wb = XLSX.utils.book_new();
 
-  const logRows = buildOperationLogRows();
-  const wsLog = XLSX.utils.aoa_to_sheet(logRows);
-  applyAccountingFormat(wsLog, [5,6,7,8,9,10,11,12,13,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,32,35,36], 1);
-  autoFitColumns(wsLog, logRows);
-  XLSX.utils.book_append_sheet(wb, wsLog, sanitizeExcelSheetName('Nhat Ky ' + (vehicleNameById(activeVehicleIdForEditing())||'Van Hanh'), new Set())); // #324 — ghi rõ xe
+  // 2.5 — Kết Quả: nhật ký đúng xe + đúng kỳ. Xuất toàn bộ: mỗi xe 1 sheet nhật ký.
+  const logSheetNames = new Set();
+  const addLogSheet = (list, vName)=>{
+    const logRows = buildOperationLogRows(list);
+    const wsLog = XLSX.utils.aoa_to_sheet(logRows);
+    applyAccountingFormat(wsLog, [5,6,7,8,9,10,11,12,13,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,34,37,38], 1);
+    autoFitColumns(wsLog, logRows);
+    XLSX.utils.book_append_sheet(wb, wsLog, sanitizeExcelSheetName('Nhat Ky ' + (vName||'Van Hanh'), logSheetNames));
+  };
+  if(resultsData){
+    addLogSheet((state.shifts||[]).filter(sh=>sh.date>=from && sh.date<=to), vehicleNameById(activeVehicleIdForEditing()));
+  } else {
+    const byVeh = {};
+    shiftsCompanyWideSafe().forEach(sh=>{ const k = sh._vehicleId||''; (byVeh[k] = byVeh[k]||[]).push(sh); });
+    const order = (state.vehicles||[]).map(v=>v.id).filter(id=>byVeh[id]);
+    Object.keys(byVeh).forEach(k=>{ if(!order.includes(k)) order.push(k); });
+    if(order.length===0) addLogSheet([], vehicleNameById(activeVehicleIdForEditing()));
+    order.forEach(k=>addLogSheet(byVeh[k], vehicleNameById(k)));
+  }
 
   const payrollRows = buildDriverPayrollRows(from, to);
   const wsPayroll = XLSX.utils.aoa_to_sheet(payrollRows);
@@ -26484,7 +26524,7 @@ function downloadWorkbook(from, to, resultsData, filenamePrefix){
   // in ra đưa cho tài xế đối chiếu trước khi Ông Chủ chuyển khoản. Số
   // LƯƠNG THỰC NHẬN ở đây LUÔN khớp đúng với dòng tương ứng ở sheet "Luong
   // Tai Xe" (cùng dùng chung công thức, không tính lại kiểu khác).
-  const usedSheetNames = new Set(['Nhat Ky Van Hanh','Luong Tai Xe','Ket Qua Kinh Doanh','Sua Chua Khau Hao']);
+  const usedSheetNames = new Set([...logSheetNames, 'Luong Tai Xe','Ket Qua Kinh Doanh','Sua Chua','Kho Hoa Don','The Kho Hoa Don']);
   const inRangeForPayslips = shiftsCompanyWideSafe().filter(sh=>sh.date>=from && sh.date<=to); // SỬA 2026-09-27 — mọi xe
   const byDriverForPayslips = {};
   for(const sh of inRangeForPayslips){
@@ -26514,11 +26554,11 @@ function downloadWorkbook(from, to, resultsData, filenamePrefix){
     XLSX.utils.book_append_sheet(wb, wsResults, 'Ket Qua Kinh Doanh');
   }
 
-  const repairRows = buildRepairRows(from, to);
+  const repairRows = buildRepairRows(from, to, !resultsData);
   const wsRepairs = XLSX.utils.aoa_to_sheet(repairRows);
   applyAccountingFormat(wsRepairs, [3,6], 1);
   autoFitColumns(wsRepairs, repairRows);
-  XLSX.utils.book_append_sheet(wb, wsRepairs, 'Sua Chua Khau Hao');
+  XLSX.utils.book_append_sheet(wb, wsRepairs, 'Sua Chua');
 
   // Kho Hoá Đơn Bù — TOÀN BỘ, không theo kỳ (giống triết lý Đối Tác & Công
   // Nợ), để Ông Chủ luôn thấy đủ bức tranh mua/dùng/còn tồn trong CÙNG 1
@@ -26549,12 +26589,12 @@ function exportResultsXLSX(resultsData){
 /// date range covered by all recorded shifts (or today if none yet).
 function exportCSV(){
   let from, to;
-  if(state.shifts.length===0){
+  const allDates = shiftsCompanyWideSafe().map(sh=>sh.date).filter(Boolean).sort();
+  if(allDates.length===0){
     const today = todayLocalDateStr();
     from = today; to = today;
   } else {
-    const dates = state.shifts.map(sh=>sh.date).sort();
-    from = dates[0]; to = dates[dates.length-1];
+    from = allDates[0]; to = allDates[allDates.length-1];
   }
   downloadWorkbook(from, to, null, 'SoXeBenHOWO');
 }
