@@ -822,7 +822,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.6 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.8 · 18/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -1788,9 +1788,15 @@ function shiftHasFuelOdoIssues(sh){ return computeShiftIssues(sh).some(msg=>FUEL
 /// tiếp tục dùng cho operationalShifts() (bình quân dầu/lương/ăn cần
 /// ODO/dầu đáng tin cậy, không đổi).
 function getRevenueExcludedShiftIds(){
-  const sorted = [...state.shifts].sort((a,b)=>chronoKey(b.date,b.shiftType)-chronoKey(a.date,a.shiftType));
+  // Bản 2.8 (Ông Chủ duyệt): xét 2 ca gần nhất của TỪNG XE (không chỉ xe đang mở) —
+  // để tab Kết Quả, trang Công Ty, Gói KT thuế cùng tạm bỏ đúng những ca đang dở, cộng lại luôn khớp.
   const excluded = new Set();
-  sorted.slice(0,2).forEach(sh=>{ if(shiftHasNonFuelOdoIssues(sh)) excluded.add(sh.id); });
+  const scan = list => [...(list||[])].sort((a,b)=>chronoKey(b.date,b.shiftType)-chronoKey(a.date,a.shiftType))
+    .slice(0,2).forEach(sh=>{ if(shiftHasNonFuelOdoIssues(sh)) excluded.add(sh.id); });
+  const act = activeVehicleIdForEditing();
+  const all = state.allVehiclesShifts || {};
+  Object.keys(all).forEach(vid=>scan(vid===act ? state.shifts : all[vid]));
+  if(!act || !all[act]) scan(state.shifts);
   return excluded;
 }
 /// Ca chỉ thiếu ODO/dầu (2 ca gần nhất) → trả về 1 BẢN SAO NHẸ với
@@ -4848,7 +4854,8 @@ function computeCumulativeAccrualProfit(toOverride, fromOverride){
   const from = fromOverride || state.equityProjectInfo.startDate || earliestShiftDate;
   const to = toOverride || todayLocalDateStr();
   if(from>to) return { ...empty, from, to };
-  const inRange = allShifts.filter(sh=>sh.date>=from && sh.date<=to);
+  const accrualExcludedIds = getRevenueExcludedShiftIds(); // Bản 2.8 — tạm bỏ ca đang dở giống tab Kết Quả
+  const inRange = allShifts.filter(sh=>sh.date>=from && sh.date<=to && !accrualExcludedIds.has(sh.id)).map(sanitizeShiftForRevenue);
   const roadFee = roadFeeForRangeCompanyWide(from, to);
   const houseRent = houseRentForRange(from, to);
   const utilities = utilitiesForRange(from, to);
@@ -9262,6 +9269,19 @@ function siteWageDisplayRate(s){
   if(!siteIsManualWage(s)) return Number(s.driverWagePerTrip)||0;
   const n = siteTripCount(s); return n>0 ? Math.round(siteManualWageTotal(s)/n) : 0;
 }
+/// Bản 2.8 (Ông Chủ duyệt) — lương 1 chuyến khi chia cho từng tài xế (múc hộ), tôn trọng ô "số chuyến tính lương":
+/// chỉ N chuyến đầu được tính lương; nếu N lớn hơn số chuyến thật thì phần dư thuộc tài xế ca (sitePayrollExtraWage).
+/// Tổng chia cho mọi tài xế luôn = siteWageTotal(s) (chi phí lương của ca).
+function sitePayrollTripWage(s, tIdx, t){
+  if(siteIsManualWage(s)) return siteTripWageAt(s, tIdx, t);
+  return tIdx < siteEffectiveWageTrips(s) ? siteTripWageAt(s, tIdx, t) : 0;
+}
+function sitePayrollExtraWage(s, nComplete){
+  if(siteIsManualWage(s)) return 0;
+  let x = 0; const eff = siteEffectiveWageTrips(s);
+  for(let k=nComplete; k<eff; k++) x += siteTripWageAt(s, k, null);
+  return x;
+}
 function siteWageTotal(s){
   if(siteIsManualWage(s)) return siteManualWageTotal(s);
   const trips = siteEffectiveWageTrips(s);
@@ -9307,11 +9327,11 @@ function driverTripWageStatsInRange(driverId, from, to, shiftsList){
       // 1; index 3 trở đi = bậc 2) — GIỮ NGUYÊN thứ tự chuyến bất kể chuyến
       // đó cuối cùng được tính lương cho tài xế nào (múc hộ/đổ hộ không làm
       // xáo trộn thứ tự đếm chuyến của dòng công trình).
-      const { rate1, rate2 } = siteWageTiers(s);
       completeTrips.forEach((t, tIdx)=>{
         const effDriver = t.pickupDriverId || sh.driverId;
-        if(effDriver===driverId){ tripCount += 1; tripWage += siteTripWageAt(s, tIdx, t); }
+        if(effDriver===driverId){ tripCount += 1; tripWage += sitePayrollTripWage(s, tIdx, t); }
       });
+      if(sh.driverId===driverId) tripWage += sitePayrollExtraWage(s, completeTrips.length);
     });
   });
   return { tripCount, tripWage };
@@ -25285,7 +25305,7 @@ function buildOperationLogRows(shiftList){
     if((sh.siteLogs||[]).length===0){
       rows.push([...shared, '','','','','','','','','','','','','','', ...trailing]); // 2.5 — đủ 14 ô trống cho khớp cột
     } else {
-      for(const s of sh.siteLogs){
+      sh.siteLogs.forEach((s, siteIdx)=>{
         const isC = s.siteType==='commercial';
         // Công Trình (cột cước, GIỮ NGUYÊN như trước) và Điểm Múc-Điểm Đổ
         // (cột riêng cho thương mại) — mỗi loại chỉ điền đúng cột của
@@ -25295,8 +25315,11 @@ function buildOperationLogRows(shiftList){
              siteWageDisplayRate(s), siteIsManualWage(s)?'':siteWageTier1Count(s), siteIsManualWage(s)?'':siteWageTiers(s).rate2, siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s), siteWageTotal(s)]
           : [s.siteName||'', '', 'Chở Cước', s.volumePerTrip||0, s.materialUnitPrice||0, '', '', siteTripCount(s), Math.round(siteRevenue(s)),
              siteWageDisplayRate(s), siteIsManualWage(s)?'':siteWageTier1Count(s), siteIsManualWage(s)?'':siteWageTiers(s).rate2, siteIsManualWage(s)?siteTripCount(s):siteEffectiveWageTrips(s), siteWageTotal(s)];
-        rows.push([...shared, ...siteFields, ...trailing]);
-      }
+        // 2.7 — ca có 2+ công trình: số liệu cả ca (odo, dầu, doanh thu ca, lương cứng, chi phí, lãi...) chỉ ghi ở dòng đầu,
+        // các dòng sau để trống để cộng cột trong Excel không bị nhân đôi.
+        if(siteIdx===0) rows.push([...shared, ...siteFields, ...trailing]);
+        else rows.push([...shared.slice(0,5), '','','','','','','','','', ...siteFields, ...trailing.map((v,k)=>k===8 ? '' : '')]);
+      });
     }
   }
   return rows;
@@ -25626,8 +25649,9 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
       let mineCount = 0, mineWage = 0;
       completeTrips.forEach((t, tIdx)=>{
         const isMine = (t.pickupDriverId||sh.driverId)===sh.driverId;
-        if(isMine){ mineCount++; mineWage += siteTripWageAt(s, tIdx, t); }
+        if(isMine){ mineCount++; mineWage += sitePayrollTripWage(s, tIdx, t); }
       });
+      mineWage += sitePayrollExtraWage(s, completeTrips.length);
       const wagePerTrip = siteIsManualWage(s) ? siteWageDisplayRate(s) : rate1; // hiển thị tham khảo (chuyến 1-3) trên dòng tổng — số tiền thật đã tính đúng theo bậc ở mineWage
       const r2 = { ...head, isShiftHead, ...trailingFields, _sortKey:sortKey,
         siteLabel:s.siteName||'', typeLabel:'Thương Mại',
@@ -25703,7 +25727,7 @@ function buildDriverPayslipTripRows(driverId, from, to, shiftsForDriver){
         const key = t.pickupDate || '';
         const g = groups.get(key) || {count:0, wage:0};
         g.count += 1;
-        g.wage += siteTripWageAt(s, tIdx, t);
+        g.wage += sitePayrollTripWage(s, tIdx, t);
         groups.set(key, g);
       });
 
