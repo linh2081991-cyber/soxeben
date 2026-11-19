@@ -822,7 +822,7 @@
 // Dấu phiên bản — hiện ở đầu tab Cài Đặt. Mỗi lần giao bản mới, số này đổi;
 // Ông Chủ đối chiếu số này trên máy với số em báo để biết chắc đang chạy
 // đúng bản mới hay máy vẫn kẹt bản cũ (cache).
-const APP_BUILD = 'Bản sạch 2.8 · 18/11/2026';
+const APP_BUILD = 'Bản sạch 2.9 · 19/11/2026';
 
 const STATUS_OPTIONS = [
   {key:'active', label:'Hoạt Động'},
@@ -4006,7 +4006,7 @@ function vatInputInvoices(){
   (state.mineInvoices||[]).forEach(inv=>{
     if(!inv.invoiceDate) return;
     const tons = Number(inv.totalVolume)||0;
-    const sup = supplierById(inv.supplierId);
+    const sup = supplierAt(inv.supplierId, inv.invoiceDate);
     const pct = (inv.vatRatePercent!==undefined && inv.vatRatePercent!==null && inv.vatRatePercent!=='') ? Number(inv.vatRatePercent)
       : (sup && sup.vatRatePercent!==undefined && sup.vatRatePercent!==null && sup.vatRatePercent!=='' ? Number(sup.vatRatePercent) : vatDefault);
     let price = Number(inv.unitPrice)||0, estimated = false;
@@ -6152,6 +6152,230 @@ function shiftTypeLabel(key){ return (SHIFT_TYPES.find(s=>s.key===key)||{}).labe
 function driverById(id){ return state.drivers.find(d=>d.id===id); }
 function supplierById(id){ return state.suppliers.find(x=>x.id===id); }
 function customerById(id){ return state.customers.find(x=>x.id===id); }
+/// ===== Bản 2.9 — TRANG THÔNG TIN ĐƠN VỊ (bấm vào tên khách hàng / nhà cung cấp) =====
+const _pq = n => (Number(n)||0).toLocaleString('vi-VN',{maximumFractionDigits:2});
+const _pv = v => (v===undefined||v===null||v==='') ? '' : String(v).replace('.',',');
+const _pnum = v => { const t=String(v||'').trim(); if(t==='') return undefined; const n=Number(t.replace(/\./g,'').replace(',','.')); return Number.isNaN(n)?NaN:n; };
+function _termLabel(t, defVat){
+  const pct = (t.invoicedBuyPercent===undefined||t.invoicedBuyPercent===null||t.invoicedBuyPercent==='') ? 100 : Number(t.invoicedBuyPercent);
+  const den = Number(t.densityRatio)>0 ? _pq(t.densityRatio)+' tấn/khối' : 'chưa khai';
+  const vat = (t.vatRatePercent===undefined||t.vatRatePercent===null||t.vatRatePercent==='') ? `${defVat}% (mặc định)` : `${_pq(t.vatRatePercent)}%`;
+  return { pct, den, vat };
+}
+/// Số liệu theo từng mốc: tấn đã mua, tấn mỏ phải xuất HĐ theo %, tấn thiếu HĐ (quy ra khối), hoá đơn mỏ đã nhập.
+function supplierTermsStats(sup){
+  const list = supplierTermsList(sup) || [{ from:'', invoicedBuyPercent: sup.invoicedBuyPercent, densityRatio: sup.densityRatio, vatRatePercent: sup.vatRatePercent }];
+  const rows = list.map((t,i)=>({ t, from: t.from||'', to: list[i+1] ? list[i+1].from : '', shifts:0, trips:0, tons:0, money:0, invTons:0 }));
+  const rowOf = date => { let r = rows[0]; rows.forEach(x=>{ if(!x.from || x.from<=date) r = x; }); return r; };
+  shiftsCompanyWideSafe().forEach(sh=>{
+    let used = false;
+    (sh.siteLogs||[]).forEach(s=>{
+      if(s.siteType!=='commercial' || s.supplierId!==sup.id) return;
+      const r = rowOf(sh.date);
+      (s.commercialTrips||[]).forEach(t=>{ const v=Number(t.buyVolume)||0, p=Number(t.buyUnitPrice)||0; if(v>0){ r.trips++; r.tons+=v; r.money+=v*p; used=true; } });
+      if(used) r._sh = (r._sh||new Set()).add(sh.id);
+    });
+  });
+  (state.mineInvoices||[]).forEach(inv=>{ if(inv.supplierId===sup.id && inv.invoiceDate){ rowOf(inv.invoiceDate).invTons += Number(inv.totalVolume)||0; } });
+  rows.forEach(r=>{ r.shifts = r._sh ? r._sh.size : 0; delete r._sh;
+    const pct = (r.t.invoicedBuyPercent===undefined||r.t.invoicedBuyPercent===null||r.t.invoicedBuyPercent==='') ? 100 : Number(r.t.invoicedBuyPercent);
+    r.pct = pct; r.dueTons = r.tons*pct/100; r.missTons = r.tons - r.dueTons; r.density = Number(r.t.densityRatio)||0;
+    r.missKhoi = r.density>0 ? r.missTons/r.density : null; });
+  return rows;
+}
+function _periodLabel(from, to){
+  const a = from ? formatDateVN(from) : 'Từ đầu';
+  if(!to) return from ? `${a} → nay` : 'Từ đầu → nay';
+  const d = new Date(to+'T00:00:00'); d.setDate(d.getDate()-1);
+  const toPrev = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  return `${a} → ${formatDateVN(toPrev)}`;
+}
+function openSupplierInfoModal(supId){
+  const sup = supplierById(supId); if(!sup){ showToast('Không tìm thấy nhà cung cấp.'); return; }
+  const defVat = Number(state.settings.vatRatePercent)||10;
+  const stats = supplierTermsStats(sup);
+  const hasTerms = !!supplierTermsList(sup);
+  const info = (lbl,v)=> v ? `<div class="summary-row"><span>${lbl}</span><span class="val" style="text-align:right;">${escapeHtml(String(v))}</span></div>` : '';
+  const termRows = stats.map((r,i)=>{ const L=_termLabel(r.t, defVat); return `
+      <tr><td><strong>${_periodLabel(r.from, r.to)}</strong></td><td class="num">${_pq(L.pct)}%</td><td class="num">${L.den}</td><td class="num">${L.vat}</td>
+      <td style="white-space:nowrap;"><button class="btn btn-ghost btn-sm supTermEditBtn" data-i="${i}" style="width:auto; padding:5px 9px;">Sửa</button></td></tr>`; }).join('');
+  const statRows = stats.map(r=>`
+      <tr><td>${_periodLabel(r.from, r.to)}<br><span class="hint">${r.shifts} ca · ${r.trips} chuyến · ${_pq(r.pct)}% HĐ</span></td>
+      <td class="num">${_pq(r.tons)}</td><td class="num">${_pq(r.dueTons)}</td><td class="num">${_pq(r.invTons)}</td>
+      <td class="num" style="color:${r.missTons>0.005?'var(--loss)':'var(--ink-soft)'};">${_pq(r.missTons)}${r.missKhoi!==null && r.missTons>0.005?`<br><span class="hint">≈ ${_pq(r.missKhoi)} khối</span>`:''}</td></tr>`).join('');
+  const tot = stats.reduce((a,r)=>({tons:a.tons+r.tons, due:a.due+r.dueTons, inv:a.inv+r.invTons, miss:a.miss+r.missTons}),{tons:0,due:0,inv:0,miss:0});
+  openModal(`
+    <div class="modal-close-row"><button class="btn btn-ghost btn-sm" id="modalCloseBtn">Đóng ✕</button></div>
+    <h3 style="font-size:20px;">🏔️ ${escapeHtml(sup.name)}</h3>
+    <div class="card" style="margin-bottom:12px;">
+      ${info('SĐT', sup.phone)}${info('Địa chỉ', sup.address)}${info('MST', sup.taxCode)}${info('Ghi chú', sup.notes)}
+      ${(sup.phone||sup.address||sup.taxCode||sup.notes)?'':'<div class="hint">Chưa có SĐT, địa chỉ, MST.</div>'}
+      <button class="btn btn-ghost btn-sm" id="partnerBasicEditBtn" style="margin-top:8px;">✏️ Sửa thông tin</button>
+    </div>
+    <h3>📅 Thông Số Hoá Đơn Theo Mốc</h3>
+    <div class="hint" style="margin:-4px 0 8px;">Mỗi ca dùng đúng mốc theo <strong>ngày của ca</strong>; hoá đơn mỏ quy đổi theo mốc của <strong>ngày hoá đơn</strong>. Mỏ đổi tỷ lệ → bấm "Thêm mốc mới", ca trước ngày đó giữ nguyên.</div>
+    <div class="grid-table-wrap"><table class="grid-table">
+      <thead><tr><th>Áp dụng</th><th>% HĐ mỏ xuất</th><th>Quy đổi</th><th>VAT</th><th></th></tr></thead>
+      <tbody>${termRows}</tbody></table></div>
+    <button class="btn btn-accent" id="supTermAddBtn" style="margin-top:10px;">+ Thêm Mốc Mới</button>
+    <h3 style="margin-top:18px;">🧾 Hoá Đơn Theo Từng Mốc (tấn)</h3>
+    <div class="grid-table-wrap"><table class="grid-table">
+      <thead><tr><th>Giai đoạn</th><th>Đã mua</th><th>Mỏ phải xuất HĐ</th><th>HĐ mỏ đã nhập</th><th>Thiếu HĐ</th></tr></thead>
+      <tbody>${statRows}
+        ${stats.length>1?`<tr class="grid-total-row"><td>Tổng</td><td class="num">${_pq(tot.tons)}</td><td class="num">${_pq(tot.due)}</td><td class="num">${_pq(tot.inv)}</td><td class="num">${_pq(tot.miss)}</td></tr>`:''}
+      </tbody></table></div>
+    <div class="hint" style="margin-top:6px;">"Thiếu HĐ" = phần mỏ không xuất hoá đơn theo tỷ lệ của từng mốc (cần bù ở Kho Hoá Đơn Bù).${hasTerms?'':' Mỏ này đang có 1 mốc duy nhất (từ đầu).'}</div>
+  `);
+  document.getElementById('partnerBasicEditBtn').addEventListener('click', ()=>openPartnerBasicEditor('supplier', supId));
+  document.getElementById('supTermAddBtn').addEventListener('click', ()=>openSupplierTermEditor(supId, null));
+  document.querySelectorAll('.supTermEditBtn').forEach(b=>b.addEventListener('click', ()=>openSupplierTermEditor(supId, Number(b.dataset.i))));
+}
+function openSupplierTermEditor(supId, idx){
+  const sup = supplierById(supId); if(!sup) return;
+  const list = supplierTermsList(sup) || [{ from:'', invoicedBuyPercent: sup.invoicedBuyPercent, densityRatio: sup.densityRatio, vatRatePercent: sup.vatRatePercent }];
+  const isNew = idx===null || idx===undefined;
+  const cur = isNew ? Object.assign({}, list[list.length-1], { from: todayLocalDateStr() }) : list[idx];
+  const isFirst = !isNew && idx===0;
+  const defVat = Number(state.settings.vatRatePercent)||10;
+  openModal(`
+    <div class="modal-close-row"><button class="btn btn-ghost btn-sm" id="modalCloseBtn">Đóng ✕</button></div>
+    <h3>📅 ${isNew?'Thêm Mốc Mới':'Sửa Mốc'} — ${escapeHtml(sup.name)}</h3>
+    <div class="field"><label>Áp dụng từ ngày (theo ngày của ca)</label>
+      ${isFirst ? `<input type="text" value="Từ đầu (mốc đầu tiên)" disabled>` : `<input type="date" id="tm_from" value="${cur.from||''}">`}</div>
+    <div class="field"><label>% khối lượng mỏ xuất được hoá đơn</label><input type="text" inputmode="decimal" id="tm_pct" placeholder="Để trống = 100%" value="${_pv(cur.invoicedBuyPercent)}"></div>
+    <div class="field"><label>Hệ số quy đổi (tấn/khối)</label><input type="text" inputmode="decimal" id="tm_den" placeholder="VD 1,6" value="${_pv(cur.densityRatio)}"></div>
+    <div class="field"><label>Thuế suất VAT (%)</label><input type="text" inputmode="decimal" id="tm_vat" placeholder="Để trống = ${defVat}% (Cài Đặt)" value="${_pv(cur.vatRatePercent)}"></div>
+    <div class="hint" style="margin-bottom:10px;">Trước khi lưu, app sẽ báo rõ bao nhiêu ca bị tính lại và số tiền thay đổi để Ông Chủ xác nhận.</div>
+    <button class="btn btn-accent" id="tm_save">💾 Lưu Mốc</button>
+    ${(!isNew && !isFirst)?`<button class="btn btn-ghost" id="tm_del" style="margin-top:8px; color:var(--loss);">Xoá mốc này</button>`:''}
+    <button class="btn btn-ghost" id="tm_back" style="margin-top:8px;">← Quay lại thông tin mỏ</button>
+  `);
+  document.getElementById('tm_back').addEventListener('click', ()=>openSupplierInfoModal(supId));
+  const collect = ()=>{
+    const pct=_pnum(document.getElementById('tm_pct').value), den=_pnum(document.getElementById('tm_den').value), vat=_pnum(document.getElementById('tm_vat').value);
+    if([pct,den,vat].some(x=>Number.isNaN(x))){ showToast('Số nhập chưa đúng, Ông Chủ kiểm tra lại.'); return null; }
+    if(pct!==undefined && (pct<0||pct>100)){ showToast('% hoá đơn phải từ 0 đến 100.'); return null; }
+    if(vat!==undefined && (vat<0||vat>100)){ showToast('Thuế suất VAT phải từ 0 đến 100.'); return null; }
+    if(den!==undefined && den<=0){ showToast('Hệ số quy đổi phải lớn hơn 0.'); return null; }
+    let from = isFirst ? '' : (document.getElementById('tm_from').value||'');
+    if(!isFirst && !from){ showToast('Chọn ngày bắt đầu áp dụng.'); return null; }
+    const others = list.filter((_,i)=>isNew || i!==idx);
+    if(others.some(t=>(t.from||'')===from)){ showToast('Đã có mốc bắt đầu đúng ngày này — Ông Chủ sửa mốc đó thay vì thêm mới.'); return null; }
+    if(from && !others.some(t=>!t.from)){ /* luôn giữ 1 mốc "từ đầu" */ }
+    const t = { from }; if(pct!==undefined) t.invoicedBuyPercent=pct; if(den!==undefined) t.densityRatio=den; if(vat!==undefined) t.vatRatePercent=vat;
+    return [...others, t];
+  };
+  document.getElementById('tm_save').addEventListener('click', async ()=>{ const nl = collect(); if(nl) await applySupplierTermsWithPreview(supId, nl); });
+  const del = document.getElementById('tm_del');
+  if(del) del.addEventListener('click', async ()=>{ await applySupplierTermsWithPreview(supId, list.filter((_,i)=>i!==idx)); });
+}
+/// Áp mốc mới cho mỏ: tính THỬ trước → báo số ca bị tính lại + số tiền thay đổi → Ông Chủ đồng ý mới lưu.
+async function applySupplierTermsWithPreview(supId, newList){
+  const sup = supplierById(supId); if(!sup) return;
+  const backup = JSON.parse(JSON.stringify({ terms: sup.terms, invoicedBuyPercent: sup.invoicedBuyPercent, densityRatio: sup.densityRatio, vatRatePercent: sup.vatRatePercent }));
+  const restore = ()=>{ ['terms','invoicedBuyPercent','densityRatio','vatRatePercent'].forEach(k=>{ if(backup[k]===undefined) delete sup[k]; else sup[k]=backup[k]; }); };
+  const today = todayLocalDateStr();
+  const measure = ()=>{ const d = computeSupplierDebt(supId); const g = supplierGoodsBreakdown(supId);
+    return { owed: d.owed, extra: d.owed + (g.totalInvoicedCashWithVat||0), profit: computeCumulativeAccrualProfit(today, '2000-01-01').netProfit }; };
+  const oldSup = JSON.parse(JSON.stringify(sup));
+  const before = measure();
+  if(!Array.isArray(newList) || newList.length===0) newList = [{ from:'' }];
+  if(!newList.some(t=>!t.from)){ const first = [...newList].sort((a,b)=>(a.from||'').localeCompare(b.from||''))[0]; first.from=''; }
+  sup.terms = newList; supplierSyncLatest(sup);
+  const after = measure();
+  const changed = []; shiftsCompanyWideSafe().forEach(sh=>{
+    if(!(sh.siteLogs||[]).some(s=>s.siteType==='commercial' && s.supplierId===supId)) return;
+    const a = supplierTermsAt(oldSup, sh.date), b = supplierTermsAt(sup, sh.date);
+    const k = t => [t.invoicedBuyPercent, t.densityRatio, t.vatRatePercent].map(v=>v===undefined||v===null||v===''?'':Number(v)).join('|');
+    if(k(a)!==k(b)) changed.push(sh.date);
+  });
+  (state.mineInvoices||[]).forEach(inv=>{ if(inv.supplierId!==supId) return; const a=supplierTermsAt(oldSup, inv.invoiceDate), b=supplierTermsAt(sup, inv.invoiceDate); if(Number(a.densityRatio)!==Number(b.densityRatio)) changed.push('HĐ'); });
+  const shiftDates = changed.filter(d=>d!=='HĐ').sort(); const invCnt = changed.filter(d=>d==='HĐ').length;
+  const sgn = n => (n>=0?'+':'−')+fmtVND(Math.abs(Math.round(n)));
+  const msg = (shiftDates.length===0 && invCnt===0)
+    ? 'Mốc này không làm thay đổi ca cũ nào. Lưu?'
+    : `Sẽ tính lại ${shiftDates.length} ca${shiftDates.length?` (từ ${formatDateVN(shiftDates[0])} đến ${formatDateVN(shiftDates[shiftDates.length-1])})`:''}${invCnt?` và ${invCnt} hoá đơn mỏ`:''} của ${sup.name}.\n\n`+
+      `• Còn nợ mỏ: ${sgn(after.owed-before.owed)}\n• Còn phải nộp thêm để mỏ xuất đủ HĐ: ${sgn(after.extra-before.extra)}\n• Lợi nhuận toàn công ty (cả quá trình): ${sgn(after.profit-before.profit)}\n\nÔng Chủ đồng ý lưu?`;
+  if(!confirm(msg)){ restore(); showToast('Đã huỷ, giữ nguyên thông số cũ.'); openSupplierInfoModal(supId); return; }
+  if(!(await saveSuppliers())){ restore(); return; }
+  showToast('Đã lưu mốc thông số.');
+  openSupplierInfoModal(supId);
+  try{ renderAll(); }catch(e){}
+}
+/// Sửa thông tin chung (không ảnh hưởng tính toán): tên, SĐT, địa chỉ, MST, ghi chú.
+function openPartnerBasicEditor(kind, id){
+  const obj = kind==='supplier' ? supplierById(id) : customerById(id); if(!obj) return;
+  const v = k => escapeHtml(obj[k]||'');
+  openModal(`
+    <div class="modal-close-row"><button class="btn btn-ghost btn-sm" id="modalCloseBtn">Đóng ✕</button></div>
+    <h3>✏️ Sửa Thông Tin — ${escapeHtml(obj.name||'')}</h3>
+    <div class="field"><label>Tên</label><input type="text" id="pb_name" value="${v('name')}"></div>
+    <div class="field"><label>SĐT</label><input type="tel" id="pb_phone" value="${v('phone')}"></div>
+    <div class="field"><label>Địa chỉ</label><input type="text" id="pb_address" value="${v('address')}"></div>
+    <div class="field"><label>Mã số thuế</label><input type="text" inputmode="numeric" id="pb_tax" value="${v('taxCode')}"></div>
+    <div class="field"><label>Ghi chú</label><input type="text" id="pb_notes" value="${v('notes')}"></div>
+    <button class="btn btn-accent" id="pb_save">💾 Lưu</button>
+    <button class="btn btn-ghost" id="pb_back" style="margin-top:8px;">← Quay lại</button>
+  `);
+  const back = ()=> kind==='supplier' ? openSupplierInfoModal(id) : openCustomerInfoModal(id);
+  document.getElementById('pb_back').addEventListener('click', back);
+  document.getElementById('pb_save').addEventListener('click', async ()=>{
+    const name = document.getElementById('pb_name').value.trim(); if(!name){ showToast('Nhập tên.'); return; }
+    const old = JSON.parse(JSON.stringify(obj));
+    Object.assign(obj, { name, phone: document.getElementById('pb_phone').value.trim(), address: document.getElementById('pb_address').value.trim(),
+      taxCode: document.getElementById('pb_tax').value.trim(), notes: document.getElementById('pb_notes').value.trim() });
+    const ok = kind==='supplier' ? await saveSuppliers() : await saveCustomers();
+    if(!ok){ Object.keys(obj).forEach(k=>delete obj[k]); Object.assign(obj, old); return; }
+    showToast('Đã lưu thông tin.'); back(); try{ renderAll(); }catch(e){}
+  });
+}
+/// Khách hàng: thông tin + hoá đơn đầu ra (thương mại & chở cước) + công trình.
+function customerInvoiceStats(cusId){
+  const r = { com:{ net:0, vat:0, billedInv:0, billedNo:0, trips:0 }, fr:{ net:0, vat:0, billedInv:0, billedNo:0, trips:0 }, sites:{} };
+  shiftsCompanyWideSafe().forEach(sh=>{ (sh.siteLogs||[]).forEach(s=>{
+    if(s.customerId!==cusId) return;
+    const isC = s.siteType==='commercial', b = isC ? r.com : r.fr;
+    const net = isC ? commercialNetSell(s) : siteRevenue(s), billed = siteBilledAmount(s);
+    const inv = isC ? (!!s.sellHasInvoice || !!s.sellIncludesVat) : (billed - net > 0.5);
+    b.net += net; b.vat += Math.max(0, billed-net); if(inv) b.billedInv += billed; else b.billedNo += billed; b.trips += siteTripCount(s);
+    const key = (s.siteName||'(chưa đặt tên)').trim();
+    const x = r.sites[key] || (r.sites[key] = { name:key, type: isC?'Thương mại':'Chở cước', shifts:0, trips:0, billed:0, last:'' });
+    x.shifts++; x.trips += siteTripCount(s); x.billed += billed; if(sh.date>x.last) x.last = sh.date;
+  }); });
+  return r;
+}
+function openCustomerInfoModal(cusId){
+  const cus = customerById(cusId); if(!cus){ showToast('Không tìm thấy khách hàng.'); return; }
+  const st = customerInvoiceStats(cusId);
+  const info = (lbl,v)=> (v!==undefined && v!==null && v!=='') ? `<div class="summary-row"><span>${lbl}</span><span class="val" style="text-align:right;">${escapeHtml(String(v))}</span></div>` : '';
+  const block = (title, b)=> (b.trips===0 && b.net===0) ? '' : `
+    <tr><td colspan="2" style="font-weight:800; background:var(--bg);">${title} · ${_pq(b.trips)} chuyến</td></tr>
+    <tr><td>Tiền hàng / cước chưa VAT</td><td class="num">${fmtVND(Math.round(b.net))}</td></tr>
+    <tr><td>VAT đầu ra</td><td class="num">${fmtVND(Math.round(b.vat))}</td></tr>
+    <tr><td>Phải thu — phần CÓ xuất hoá đơn</td><td class="num">${fmtVND(Math.round(b.billedInv))}</td></tr>
+    <tr><td>Phải thu — phần KHÔNG xuất hoá đơn</td><td class="num">${fmtVND(Math.round(b.billedNo))}</td></tr>`;
+  const sites = Object.values(st.sites).sort((a,b)=>b.last.localeCompare(a.last));
+  openModal(`
+    <div class="modal-close-row"><button class="btn btn-ghost btn-sm" id="modalCloseBtn">Đóng ✕</button></div>
+    <h3 style="font-size:20px;">👷 ${escapeHtml(cus.name)}</h3>
+    <div class="card" style="margin-bottom:12px;">
+      ${info('SĐT', cus.phone)}${info('Địa chỉ', cus.address)}${info('MST', cus.taxCode)}${info('% giữ lại', (Number(cus.holdbackPercent)||0)>0 ? _pq(cus.holdbackPercent)+'%' : '')}${info('Ghi chú', cus.notes)}
+      ${(cus.phone||cus.address||cus.taxCode||cus.notes)?'':'<div class="hint">Chưa có SĐT, địa chỉ, MST.</div>'}
+      <button class="btn btn-ghost btn-sm" id="partnerBasicEditBtn" style="margin-top:8px;">✏️ Sửa thông tin</button>
+    </div>
+    <h3>🧾 Hoá Đơn Đầu Ra (cả quá trình)</h3>
+    <div class="grid-table-wrap"><table class="grid-table"><tbody>
+      ${block('🏗️ Thương mại', st.com)}${block('🚛 Chở cước', st.fr)}
+      ${(st.com.trips+st.fr.trips)===0?'<tr><td>Chưa có chuyến nào.</td><td></td></tr>':''}
+    </tbody></table></div>
+    <div class="hint" style="margin-top:6px;">Thương mại: có hoá đơn = ca tick "có hoá đơn bán" hoặc giá đã gồm VAT. Chở cước: có hoá đơn = giá đã gồm VAT hoặc có nhập thuế suất VAT cước.</div>
+    ${sites.length?`<h3 style="margin-top:18px;">📍 Công Trình (${sites.length})</h3>
+    <div class="grid-table-wrap"><table class="grid-table">
+      <thead><tr><th>Công trình</th><th>Ca</th><th>Chuyến</th><th>Phải thu</th></tr></thead>
+      <tbody>${sites.map(x=>`<tr><td>${escapeHtml(x.name)}<br><span class="hint">${x.type} · gần nhất ${formatDateVN(x.last)}</span></td><td class="num">${x.shifts}</td><td class="num">${_pq(x.trips)}</td><td class="num">${fmtVND(Math.round(x.billed))}</td></tr>`).join('')}</tbody></table></div>`:''}
+  `);
+  document.getElementById('partnerBasicEditBtn').addEventListener('click', ()=>openPartnerBasicEditor('customer', cusId));
+}
 /// Modal quản lý Nhà Cung Cấp / Điểm Múc — thêm/sửa/xoá. Sửa 1 nhà cung
 /// cấp ở đây tự động áp dụng lại cho MỌI công trình (cũ lẫn mới) đang gắn
 /// với nó, vì các hàm tính (siteVatRateFraction, siteMissingDocumentedVolume,
@@ -6182,15 +6406,20 @@ function renderSupplierManagerModal(editingId, linkToSiteIdx){
       <label>Tên nhà cung cấp / mỏ</label>
       <input type="text" id="sup_name" value="${escapeHtml(val(editing,'name'))}" placeholder="VD: Mỏ Hà Nam">
     </div>
-    <div class="field">
+    ${editing ? `<div class="card" style="margin-bottom:10px;">
+      <div style="font-weight:700; margin-bottom:4px;">📅 Thông số đang áp dụng (mốc mới nhất)</div>
+      <div class="hint">% hoá đơn: ${(()=>{const t=supplierTermsAt(editing,null); return (t.invoicedBuyPercent===undefined||t.invoicedBuyPercent===null||t.invoicedBuyPercent==='')?'100':_pq(t.invoicedBuyPercent);})()}% · Quy đổi: ${(()=>{const t=supplierTermsAt(editing,null); return Number(t.densityRatio)>0?_pq(t.densityRatio)+' tấn/khối':'chưa khai';})()} · VAT: ${(()=>{const t=supplierTermsAt(editing,null); return (t.vatRatePercent===undefined||t.vatRatePercent===null||t.vatRatePercent==='')?'mặc định':_pq(t.vatRatePercent)+'%';})()}</div>
+      <button class="btn btn-ghost btn-sm" id="supOpenTermsBtn" style="margin-top:8px;">📅 Đổi thông số theo mốc thời gian ›</button>
+    </div>` : ''}
+    <div class="field ${editing?'sx-removed':''}">
       <label>Thuế suất VAT (%)</label>
       <input type="text" inputmode="decimal" id="sup_vat" placeholder="Mặc định ${Number(state.settings.vatRatePercent)||0}% (theo Cài Đặt)" value="${val(editing,'vatRatePercent')}">
     </div>
-    <div class="field">
+    <div class="field ${editing?'sx-removed':''}">
       <label>% khối lượng mỏ xuất được hoá đơn</label>
       <input type="text" inputmode="decimal" id="sup_invoicedPct" placeholder="Mặc định 100% (đủ hoá đơn)" value="${val(editing,'invoicedBuyPercent')}">
     </div>
-    <div class="field">
+    <div class="field ${editing?'sx-removed':''}">
       <label>Hệ số quy đổi (tấn/khối)</label>
       <input type="text" inputmode="decimal" id="sup_density" placeholder="VD 1,7" value="${val(editing,'densityRatio')}">
     </div>
@@ -6210,6 +6439,7 @@ function renderSupplierManagerModal(editingId, linkToSiteIdx){
     showToast('Đã gắn nhà cung cấp cho công trình này.');
   }));
   document.querySelectorAll('.supEditBtn').forEach(btn=>btn.addEventListener('click', ()=>renderSupplierManagerModal(btn.dataset.id, linkToSiteIdx)));
+  { const tb = document.getElementById('supOpenTermsBtn'); if(tb && editing) tb.addEventListener('click', ()=>openSupplierInfoModal(editing.id)); }
   document.querySelectorAll('.supDelBtn').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Xoá nhà cung cấp này? Các công trình đang gắn sẽ về trạng thái "chưa gắn" (dùng mặc định chung ở Cài Đặt).')) return;
     state.suppliers = state.suppliers.filter(x=>x.id!==btn.dataset.id);
@@ -6227,7 +6457,8 @@ function renderSupplierManagerModal(editingId, linkToSiteIdx){
       densityRatio: parseVN(document.getElementById('sup_density').value)
     };
     let savedId;
-    if(editing){ Object.assign(editing, data); savedId = editing.id; }
+    // 2.9 — sửa mỏ đã có: chỉ đổi TÊN ở đây; thông số hoá đơn đổi qua "mốc thời gian" để ca cũ không bị tính lại.
+    if(editing){ editing.name = name; savedId = editing.id; }
     else { savedId = uid('supplier'); state.suppliers.push({ id: savedId, ...data }); }
     if(!(await saveSuppliers())) return;
     finishAndLink(savedId);
@@ -6287,7 +6518,7 @@ function renderMineInvoiceManagerModal(editingId, defaultGoodsType){
               <td>${formatDateVN(inv.invoiceDate)}${inv.invoiceNumber?`<br><span class="hint">Số ${escapeHtml(inv.invoiceNumber)}</span>`:''}</td>
               <td>${sup?escapeHtml(sup.name):'(chưa gắn)'}</td>
               <td class="num">${fmtQty(inv.totalVolume)}</td>
-              <td class="num">${sup&&Number(sup.densityRatio)>0?fmtQty(khoi):'—'}</td>
+              <td class="num">${(()=>{ const sd = inv.supplierId ? supplierAt(inv.supplierId, inv.invoiceDate) : null; return sd&&Number(sd.densityRatio)>0?fmtQty(khoi):'—'; })()}</td>
               <td style="white-space:nowrap;">
                 <button class="btn btn-ghost btn-sm mineInvEditBtn" data-id="${inv.id}" style="width:auto; padding:5px 9px; margin-right:4px;">Sửa</button>
                 <button class="btn btn-ghost btn-sm mineInvDelBtn" data-id="${inv.id}" style="width:auto; padding:5px 9px; color:var(--loss);">Xoá</button>
@@ -6378,7 +6609,8 @@ function renderMineInvoiceManagerModal(editingId, defaultGoodsType){
   const volumeInputEl = document.getElementById('mi_volume');
   const conversionHintEl = document.getElementById('mi_conversionHint');
   const refreshConversionHint = () => {
-    const sup = supplierSelEl.value ? supplierById(supplierSelEl.value) : null;
+    const miDateEl = document.getElementById('mi_invoiceDate');
+    const sup = supplierSelEl.value ? supplierAt(supplierSelEl.value, (miDateEl && miDateEl.value) || null) : null;
     const vol = parseFloat((volumeInputEl.value||'').replace(',','.'))||0;
     if(!sup){ conversionHintEl.textContent = 'Chọn nhà cung cấp để app tự quy đổi tấn → khối theo đúng tỷ trọng của mỏ đó.'; return; }
     const density = Number(sup.densityRatio)||0;
@@ -7781,13 +8013,67 @@ function vatRateFraction(){ return (Number(state.settings.vatRatePercent)||0)/10
 // đơn nhà cung cấp thực xuất được — dùng CHUNG ở mọi chỗ tính VAT phía
 // MUA (commercialCashToSupplier, partnerTripRows phía supplier), để nhất
 // quán tuyệt đối, không lệch nhau giữa các nơi tính song song.
+/// ===== Bản 2.9 — THÔNG SỐ NHÀ CUNG CẤP THEO MỐC THỜI GIAN (Ông Chủ duyệt 19/11/2026) =====
+/// Mỗi mỏ có lịch sử mốc sup.terms = [{from:'' | 'YYYY-MM-DD', invoicedBuyPercent, densityRatio, vatRatePercent}].
+/// Mỗi ca dùng đúng mốc theo NGÀY CỦA CA; hoá đơn mỏ dùng mốc theo ngày hoá đơn.
+/// Đổi thông số = thêm mốc mới từ ngày X → ca trước ngày X giữ nguyên. Mỏ chưa có terms → dùng 3 ô cũ (như trước).
+/// 3 ô cũ trên sup luôn đồng bộ = mốc MỚI NHẤT (để chỗ chỉ hiển thị "đang áp dụng" vẫn đúng).
+const _siteDateIdx = new WeakMap(); let _siteDateIdxAt = 0;
+function indexSiteDates(){
+  const add = list => (list||[]).forEach(sh=>((sh && sh.siteLogs)||[]).forEach(x=>{ if(x && typeof x==='object') _siteDateIdx.set(x, sh.date||null); }));
+  Object.values(state.allVehiclesShifts||{}).forEach(add);
+  add(state.shifts);
+  _siteDateIdxAt = Date.now();
+}
+function siteDateOf(site){
+  if(!site || typeof site!=='object') return null;
+  const d = state.draftShift;
+  if(d && (d.siteLogs||[]).indexOf(site)>=0) return d.date||null;
+  let v = _siteDateIdx.get(site);
+  if(v!==undefined) return v;
+  if(Date.now()-_siteDateIdxAt > 15){ indexSiteDates(); v = _siteDateIdx.get(site); if(v!==undefined) return v; }
+  return null;
+}
+function supplierTermsList(sup){
+  if(!sup || !Array.isArray(sup.terms) || sup.terms.length===0) return null;
+  return [...sup.terms].sort((a,b)=>(a.from||'').localeCompare(b.from||''));
+}
+function supplierTermsAt(sup, date){
+  if(!sup) return null;
+  const list = supplierTermsList(sup);
+  if(!list) return { from:'', invoicedBuyPercent: sup.invoicedBuyPercent, densityRatio: sup.densityRatio, vatRatePercent: sup.vatRatePercent };
+  if(!date) return list[list.length-1];
+  let pick = list[0];
+  for(const t of list){ if(!t.from || t.from<=date) pick = t; }
+  return pick;
+}
+/// Bản sao NHẸ của nhà cung cấp mang đúng thông số của mốc áp dụng cho ngày đó.
+function supplierAt(supplierId, date){
+  const sup = supplierId ? supplierById(supplierId) : null;
+  if(!sup || !supplierTermsList(sup)) return sup;
+  const t = supplierTermsAt(sup, date);
+  return Object.assign({}, sup, { invoicedBuyPercent: t.invoicedBuyPercent, densityRatio: t.densityRatio, vatRatePercent: t.vatRatePercent, _termFrom: t.from||'' });
+}
+function supplierForSite(site){ return site && site.supplierId ? supplierAt(site.supplierId, siteDateOf(site)) : null; }
+/// Tạo terms lần đầu từ 3 ô cũ (mốc "từ đầu") — dữ liệu & kết quả cũ giữ nguyên.
+function supplierEnsureTerms(sup){
+  if(!Array.isArray(sup.terms) || sup.terms.length===0)
+    sup.terms = [{ from:'', invoicedBuyPercent: sup.invoicedBuyPercent, densityRatio: sup.densityRatio, vatRatePercent: sup.vatRatePercent }];
+  return sup.terms;
+}
+function supplierSyncLatest(sup){
+  const list = supplierTermsList(sup); if(!list) return;
+  sup.terms = list.map(t=>{ const o = { from: t.from||'' }; ['invoicedBuyPercent','densityRatio','vatRatePercent'].forEach(k=>{ if(t[k]!==undefined && t[k]!==null && t[k]!=='' && !Number.isNaN(Number(t[k]))) o[k] = Number(t[k]); }); return o; });
+  const last = sup.terms[sup.terms.length-1];
+  ['invoicedBuyPercent','densityRatio','vatRatePercent'].forEach(k=>{ if(last[k]===undefined) delete sup[k]; else sup[k] = last[k]; });
+}
 function siteInvoicedBuyPercent(s){
-  const sup = s.supplierId ? supplierById(s.supplierId) : null;
+  const sup = supplierForSite(s);
   const rawPct = sup && sup.invoicedBuyPercent!==undefined && sup.invoicedBuyPercent!==null && sup.invoicedBuyPercent!=='' ? sup.invoicedBuyPercent : undefined;
   return (rawPct===undefined) ? 100 : Number(rawPct);
 }
 function siteVatRateFraction(s){
-  const sup = s.supplierId ? supplierById(s.supplierId) : null;
+  const sup = supplierForSite(s);
   if(sup && sup.vatRatePercent!==undefined && sup.vatRatePercent!==null && sup.vatRatePercent!=='') return Number(sup.vatRatePercent)/100;
   return (s.vatRatePercent!==undefined && s.vatRatePercent!==null && s.vatRatePercent!=='') ? Number(s.vatRatePercent)/100 : vatRateFraction();
 }
@@ -8159,7 +8445,7 @@ function shiftMaterialCost(sh){ return (sh.siteLogs||[]).reduce((sum,s)=>sum+sit
 /// Cung Cấp trước, site log là dự phòng) — dùng chung cho cả
 /// siteGoodsTypeGroups() lẫn buildMineInvoiceMatchLedger() bên dưới.
 function siteInvoicedConfig(s){
-  const sup = s.supplierId ? supplierById(s.supplierId) : null;
+  const sup = supplierForSite(s);
   const rawPct = sup && sup.invoicedBuyPercent!==undefined && sup.invoicedBuyPercent!==null && sup.invoicedBuyPercent!=='' ? sup.invoicedBuyPercent : s.invoicedBuyPercent;
   const rawDensity = sup && sup.densityRatio!==undefined && sup.densityRatio!==null && sup.densityRatio!=='' ? sup.densityRatio : s.densityRatio;
   const invoicedPct = (rawPct===undefined||rawPct===null||rawPct==='') ? 100 : Number(rawPct);
@@ -8264,7 +8550,7 @@ function buildMineInvoiceMatchLedger(goodsType){
     return '1'+(s.sellHasInvoice?'1':'0')+(buyIsDeductible(s)?'1':'0')+':'+buy+':'+(s.supplierId||'')+':'+(s.invoicedBuyPercent??'')+':'+(s.densityRatio??'');
   }).join('|')).join(',');
   const cacheKey = (_ledgerReportMode?'R':'L')+'|'+gt+'|'+JSON.stringify(state.mineInvoices.filter(inv=>normGoodsType(inv.goodsType)===gt))
-    +'|'+JSON.stringify((state.suppliers||[]).map(sp=>[sp.id, sp.invoicedBuyPercent, sp.densityRatio]))
+    +'|'+JSON.stringify((state.suppliers||[]).map(sp=>[sp.id, sp.invoicedBuyPercent, sp.densityRatio, sp.terms||null]))
     +'|'+shiftSig;
   if(_mineInvoiceMatchCache[gt] && _mineInvoiceMatchCache[gt].key===cacheKey) return _mineInvoiceMatchCache[gt].data;
 
@@ -8372,7 +8658,7 @@ function normGoodsType(v){ return String(v||'').trim().toLowerCase(); }
 /// ĐÚNG tỷ trọng của nhà cung cấp gắn trên hoá đơn đó (không dùng tỷ trọng
 /// mặc định chung — mỗi mỏ có thể có tỷ trọng khác nhau).
 function mineInvoiceVolumeKhoi(inv){
-  const sup = inv.supplierId ? supplierById(inv.supplierId) : null;
+  const sup = inv.supplierId ? supplierAt(inv.supplierId, inv.invoiceDate) : null;
   const density = sup ? Number(sup.densityRatio)||0 : 0;
   if(density<=0) return 0; // chưa cấu hình tỷ trọng cho mỏ này — không tự chế số quy đổi
   return (Number(inv.totalVolume)||0) / density;
@@ -8607,7 +8893,7 @@ function buildInvoiceLotLedger(goodsType){
   }).join('|')).join(',');
   const cacheKey = 'E323|'+(_ledgerReportMode?'R':'L')+'|'+gt+'|'+JSON.stringify(state.invoiceLots.filter(l=>normGoodsType(l.goodsType)===gt))
     +'|'+JSON.stringify(state.mineInvoices.filter(inv=>normGoodsType(inv.goodsType)===gt))
-    +'|'+JSON.stringify((state.suppliers||[]).map(sp=>[sp.id, sp.invoicedBuyPercent, sp.densityRatio]))
+    +'|'+JSON.stringify((state.suppliers||[]).map(sp=>[sp.id, sp.invoicedBuyPercent, sp.densityRatio, sp.terms||null]))
     +'|'+JSON.stringify((state.settings.invoiceRefPriceByGoods||{})[gt]||0)+'|'+shiftSig;
   if(_invoiceLedgerCache[gt] && _invoiceLedgerCache[gt].key===cacheKey) return _invoiceLedgerCache[gt].data;
 
@@ -8813,7 +9099,7 @@ function diagnoseInvoiceLotShiftGaps(from, to){
       if(s.siteType!=='commercial') return;
       const groups = siteGoodsTypeGroups(s);
       groups.forEach(g=>{
-        const sup = s.supplierId ? supplierById(s.supplierId) : null;
+        const sup = s.supplierId ? supplierAt(s.supplierId, sh.date) : null;
         const rawPct = sup && sup.invoicedBuyPercent!==undefined && sup.invoicedBuyPercent!==null && sup.invoicedBuyPercent!=='' ? sup.invoicedBuyPercent : s.invoicedBuyPercent;
         const rawDensity = sup && sup.densityRatio!==undefined && sup.densityRatio!==null && sup.densityRatio!=='' ? sup.densityRatio : s.densityRatio;
         const invoicedPct = (rawPct===undefined||rawPct===null||rawPct==='') ? 100 : Number(rawPct);
@@ -9094,7 +9380,7 @@ function computeInvoiceMismatchWhatIf(from, to){
         }
       }
       if(!s.sellHasInvoice){
-        const sTicked = {...s, buyHasInvoice:true, sellHasInvoice:true};
+        const sTicked = {...s, buyHasInvoice:true, sellHasInvoice:true}; _siteDateIdx.set(sTicked, sh.date); // 2.9 — bản sao giữ đúng ngày ca
         siteGoodsTypeGroups(s, {sh, idx}).forEach(g=>{
           const need = siteGroupRealMissingVolume(sTicked, g);
           if(need<=0) return;
@@ -11247,7 +11533,7 @@ function updateSiteCalc(idx){
   const el = document.querySelector(`.site-calc[data-idx="${idx}"]`);
   if(!el) return;
   if(s.siteType==='commercial'){
-    const sup = s.supplierId ? supplierById(s.supplierId) : null;
+    const sup = supplierForSite(s);
     // Khối "Đang áp dụng" — LUÔN hiện, không phụ thuộc có thiếu chứng từ
     // hay không, để Ông Chủ thấy ngay từng số đang lấy TỪ ĐÂU (nhà cung
     // cấp / gõ tay riêng / mặc định chung Cài Đặt) — hết mơ hồ "nhập rồi
@@ -11381,7 +11667,7 @@ function updateSiteCalc(idx){
 /// trừ) — 2 số này được ghép LẠI ĐÚNG Y HỆT logic bên trong hàm đó (xem
 /// comment tại commercialVatPayable()), không phải công thức mới.
 function renderSiteCashFlowExplainerModal(s){
-  const sup = s.supplierId ? supplierById(s.supplierId) : null;
+  const sup = supplierForSite(s);
   const cus = s.customerId ? customerById(s.customerId) : null;
   const resolve = (supKey, siteKey, defVal, defLabel) => {
     if(sup && sup[supKey]!==undefined && sup[supKey]!==null && sup[supKey]!=='') return { val: sup[supKey], src: `nhà cung cấp "${escapeHtml(sup.name)}"` };
@@ -11531,7 +11817,7 @@ ${lotInfo.allocations.map(a=>{
     // đổi qua tỷ trọng nhà cung cấp; đơn giá (nếu có) đã là NET/chưa VAT,
     // khác lot (giá lot là GỘP đã có VAT) nên công thức tách VAT khác đi.
     const inv = src.obj;
-    const sup = inv.supplierId ? supplierById(inv.supplierId) : null;
+    const sup = inv.supplierId ? supplierAt(inv.supplierId, inv.invoiceDate) : null;
     const density = sup ? Number(sup.densityRatio)||0 : 0;
     const volKhoi = mineInvoiceVolumeKhoi(inv);
     const unitPrice = Number(inv.unitPrice)||0;
@@ -17440,7 +17726,7 @@ function partnerTripRows(partnerId, side, from, to){
         // khách, thay vì theo cái đã mua. supplierGoodsBreakdown() vẫn
         // dùng field `goodsType` gốc (đúng theo hoá đơn mỏ xuất), không đổi.
         const sellGoodsTypeEffective = sellTypeRaw || buyType;
-        return { goodsType: t.goodsType||'(chưa khai)', goodsTypeDisplay, sellGoodsTypeEffective, tripLocation, vol, price, unit: side==='customer'?'khối':'tấn', netAmt, withVatAmt, cash };
+        return { goodsType: t.goodsType||'(chưa khai)', goodsTypeDisplay, sellGoodsTypeEffective, tripLocation, vol, price, unit: side==='customer'?'khối':'tấn', netAmt, withVatAmt, cash, invoicedPct: invoicedPctFrac*100 };
       });
       const driver = driverById(sh.driverId);
       groups.push({
@@ -17544,6 +17830,7 @@ function supplierGoodsBreakdown(supplierId, from, to){
   const sup = supplierById(supplierId);
   const rawPct = sup && sup.invoicedBuyPercent!==undefined && sup.invoicedBuyPercent!==null && sup.invoicedBuyPercent!=='' ? sup.invoicedBuyPercent : undefined;
   const invoicedPct = (rawPct===undefined) ? 100 : Number(rawPct);
+  const pctSeen = new Set(); let totalExpectedInvoiceVolume = 0; // 2.9 — mỗi chuyến theo đúng mốc của ngày ca
   const byGoods = {};
   let totalVol=0, totalTrips=0, totalNet=0, totalVat=0, totalCash=0;
   // SỬA 2026-08-27 (Ông Chủ yêu cầu — tách rõ 3 mục: tổng tiền hàng, tiền
@@ -17575,8 +17862,10 @@ function supplierGoodsBreakdown(supplierId, from, to){
   for(const g of groups){
     for(const t of g.trips){
       const key = t.goodsType || '(chưa khai)';
-      if(!byGoods[key]) byGoods[key] = { goodsType:key, trips:0, vol:0, net:0, vat:0, cash:0 };
+      if(!byGoods[key]) byGoods[key] = { goodsType:key, trips:0, vol:0, net:0, vat:0, cash:0, expectedInvoiceVolume:0 };
       const b = byGoods[key];
+      const tPct = (t.invoicedPct!==undefined && t.invoicedPct!==null) ? t.invoicedPct : invoicedPct;
+      pctSeen.add(Math.round(tPct*100)/100); b.expectedInvoiceVolume += t.vol*tPct/100; totalExpectedInvoiceVolume += t.vol*tPct/100;
       // vat = phần chênh giữa "Có VAT" và "Chưa VAT" — CHỈ khi VAT thực
       // sự được áp (g.vatApplied), khớp đúng cách cash được chọn ở
       // partnerTripRows (cash = vatApplied ? withVatAmt : netAmt), nên
@@ -17588,11 +17877,9 @@ function supplierGoodsBreakdown(supplierId, from, to){
       else { totalNetNotInvoiced += t.netAmt; totalInvoicedCashWithVat += (t.withVatAmt - t.netAmt); }
     }
   }
-  const rows = Object.values(byGoods)
-    .map(r=>({ ...r, expectedInvoiceVolume: r.vol * invoicedPct / 100 }))
-    .sort((a,b)=>b.cash-a.cash);
-  const totalExpectedInvoiceVolume = totalVol * invoicedPct / 100;
-  return { rows, totalVol, totalTrips, totalNet, totalVat, totalCash, invoicedPct, totalExpectedInvoiceVolume, totalInvoicedCashWithVat,
+  const rows = Object.values(byGoods).sort((a,b)=>b.cash-a.cash);
+  const invoicedPctLabel = pctSeen.size>1 ? 'theo từng mốc' : ((pctSeen.size===1 ? [...pctSeen][0] : invoicedPct).toLocaleString('vi-VN')+'%');
+  return { rows, totalVol, totalTrips, totalNet, totalVat, totalCash, invoicedPct, invoicedPctLabel, totalExpectedInvoiceVolume, totalInvoicedCashWithVat,
     totalNetInvoiced, totalVatInvoiced, totalNetNotInvoiced };
 }
 /// Y HỆT supplierGoodsBreakdown() ở trên nhưng cho phía KHÁCH HÀNG (yêu
@@ -17650,7 +17937,7 @@ function supplierGoodsBreakdownHtml(b, cashColLabel, unitLabel='tấn'){
   return `
     <div class="grid-table-wrap">
       <table class="grid-table">
-        <thead><tr><th>Loại Hàng</th><th>Số Chuyến</th><th>Khối Lượng</th>${showInvoiceCol?`<th>HĐ Mỏ Thực Trả (${b.invoicedPct}%)</th>`:''}<th>Chưa VAT</th><th>VAT</th><th>${label}</th></tr></thead>
+        <thead><tr><th>Loại Hàng</th><th>Số Chuyến</th><th>Khối Lượng</th>${showInvoiceCol?`<th>HĐ Mỏ Thực Trả (${b.invoicedPctLabel||(b.invoicedPct+'%')})</th>`:''}<th>Chưa VAT</th><th>VAT</th><th>${label}</th></tr></thead>
         <tbody>
           ${rowsHtml}
           <tr class="grid-total-row">
@@ -18765,10 +19052,11 @@ function openCustomerDetail(customerId, preserveScroll){
       <button class="btn btn-ghost btn-sm" id="custDetailBackBtn">← Quay Lại Kết Quả</button>
     </section>
     <section class="group">
-      <div class="card" style="text-align:center; padding:20px 16px;">
+      <div class="card partner-name-card" id="cusInfoOpenBtn" style="text-align:center; padding:20px 16px; cursor:pointer;">
         <h3 style="margin:0; font-size:22px; font-weight:800; color:var(--ink); letter-spacing:-0.2px;">${escapeHtml(cus.name)}</h3>
         ${cus.phone?`<div style="margin-top:6px; color:var(--ink-soft); font-size:13.5px;">${escapeHtml(cus.phone)}</div>`:''}
         ${cus.address?`<div style="margin-top:2px; color:var(--ink-soft); font-size:13.5px;">${escapeHtml(cus.address)}</div>`:''}
+        <div style="margin-top:6px; color:var(--accent); font-size:12.5px; font-weight:700;">ⓘ Thông tin · hoá đơn đầu ra · công trình ›</div>
       </div>
     </section>
     ${goodsAllTime.totalTrips>0 ? `
@@ -18903,6 +19191,7 @@ function openCustomerDetail(customerId, preserveScroll){
   // dùng để KHÔI PHỤC lại đúng chỗ cũ khi bấm "Quay Lại", không liên quan
   // gì tới trang chi tiết vừa mở).
   getActualScrollEl().scrollTop = 0;
+  { const ib = document.getElementById('cusInfoOpenBtn'); if(ib) ib.addEventListener('click', ()=>openCustomerInfoModal(customerId)); }
   document.getElementById('custDetailBackBtn').addEventListener('click', ()=>{
     if(state.showCompanyDashboard){ renderCompanyDashboardPage(true); } else { renderAll(); }
     restoreMainScroll();
@@ -19171,8 +19460,9 @@ function openSupplierDetail(supplierId, preserveScroll){
       <button class="btn btn-ghost btn-sm" id="supDetailBackBtn">← Quay Lại Kết Quả</button>
     </section>
     <section class="group">
-      <div class="card" style="text-align:center; padding:20px 16px;">
+      <div class="card partner-name-card" id="supInfoOpenBtn" style="text-align:center; padding:20px 16px; cursor:pointer;">
         <h3 style="margin:0; font-size:22px; font-weight:800; color:var(--ink); letter-spacing:-0.2px;">${escapeHtml(sup.name)}</h3>
+        <div style="margin-top:6px; color:var(--accent); font-size:12.5px; font-weight:700;">ⓘ Thông tin · % hoá đơn · quy đổi theo mốc ›</div>
       </div>
     </section>
     ${goodsAllTime.totalTrips>0 ? `
@@ -19186,7 +19476,7 @@ function openSupplierDetail(supplierId, preserveScroll){
           <thead><tr><th>Khoản</th><th class="num">Số Tiền</th></tr></thead>
           <tbody>
             <tr><td>🟢 Tiền hàng Mỏ <b>ĐÃ</b> xuất hoá đơn</td><td class="num" style="font-weight:700;">${fmtVND(goodsAllTime.totalNetInvoiced)}</td></tr>
-            <tr><td style="padding-left:28px; color:var(--ink-soft);">↳ VAT (đúng ${goodsAllTime.invoicedPct}% phần đã xuất)</td><td class="num" style="color:var(--ink-soft);">${fmtVND(goodsAllTime.totalVatInvoiced)}</td></tr>
+            <tr><td style="padding-left:28px; color:var(--ink-soft);">↳ VAT (đúng ${goodsAllTime.invoicedPctLabel} phần đã xuất)</td><td class="num" style="color:var(--ink-soft);">${fmtVND(goodsAllTime.totalVatInvoiced)}</td></tr>
             <tr><td>🔴 Tiền hàng Mỏ <b>CHƯA</b> xuất hoá đơn</td><td class="num" style="font-weight:700;">${fmtVND(goodsAllTime.totalNetNotInvoiced)}</td></tr>
           </tbody>
         </table>
@@ -19202,7 +19492,7 @@ function openSupplierDetail(supplierId, preserveScroll){
             <tr><td>Tổng phải trả</td><td class="num" style="font-weight:700;">${fmtVND(debt.payable)}</td></tr>
             <tr><td>Tổng ${companyTag()} đã bank cho mỏ</td><td class="num" style="font-weight:800;">${fmtVND(debt.paid)}</td></tr>
             <tr class="grid-total-row"><td>CÒN NỢ MỎ</td><td class="num" style="color:${debt.owed>0?'var(--loss)':'var(--profit)'}">${debt.owed>0 ? fmtVND(debt.owed) : `0đ (đang tạm ứng dư ${fmtVND(Math.abs(debt.owed))})`}</td></tr>
-            <tr class="grid-total-row"><td>Còn phải nộp thêm (để mỏ xuất đủ hoá đơn ${goodsAllTime.invoicedPct}% cho phần chưa xuất)</td><td class="num" style="color:${owedForInvoiceAllTime>0?'var(--loss)':'var(--profit)'}">${owedForInvoiceAllTime>0 ? fmtVND(owedForInvoiceAllTime) : `0đ (đã đủ — dư ${fmtVND(Math.abs(owedForInvoiceAllTime))})`}</td></tr>
+            <tr class="grid-total-row"><td>Còn phải nộp thêm (để mỏ xuất đủ hoá đơn ${goodsAllTime.invoicedPctLabel} cho phần chưa xuất)</td><td class="num" style="color:${owedForInvoiceAllTime>0?'var(--loss)':'var(--profit)'}">${owedForInvoiceAllTime>0 ? fmtVND(owedForInvoiceAllTime) : `0đ (đã đủ — dư ${fmtVND(Math.abs(owedForInvoiceAllTime))})`}</td></tr>
           </tbody>
         </table>
       </div>
@@ -19252,6 +19542,7 @@ function openSupplierDetail(supplierId, preserveScroll){
     </section>
   `;
   getActualScrollEl().scrollTop = 0;
+  { const ib = document.getElementById('supInfoOpenBtn'); if(ib) ib.addEventListener('click', ()=>openSupplierInfoModal(supplierId)); }
   document.getElementById('supDetailBackBtn').addEventListener('click', ()=>{
     // SỬA 2026-09-20 — cùng lý do như custDetailBackBtn ở trên.
     if(state.showCompanyDashboard){ renderCompanyDashboardPage(true); } else { renderAll(); }
@@ -26637,6 +26928,7 @@ function exportCSV(){
 // ========================= NAV & INIT =========================
 
 function renderAll(){
+  try{ indexSiteDates(); }catch(e){}
   recomputeBankLoanMonthlyPayment(); // luôn làm mới Gốc+Lãi/tháng theo đúng dư nợ giảm dần hôm nay TRƯỚC khi bất kỳ tab nào (Kết Quả, Trợ Lý...) đọc state.settings.monthlyLoanPayment
   // Tháng đang "xem lại" mà lại trùng đúng THÁNG HIỆN TẠI THẬT — dù do Ông
   // Chủ lỡ chọn ngay tháng hiện tại ở "+ Thêm Tháng Mới", hay do đồng hồ vừa
